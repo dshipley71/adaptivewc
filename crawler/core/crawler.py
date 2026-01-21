@@ -25,6 +25,8 @@ from crawler.legal.pii_detector import PIIDetector
 from crawler.models import FetchResult, FetchStatus
 from crawler.storage.robots_cache import RobotsCache
 from crawler.storage.url_store import URLStore, URLEntry
+from crawler.storage.structure_store import StructureStore
+from crawler.adaptive.structure_analyzer import StructureAnalyzer
 from crawler.utils.logging import CrawlerLogger, setup_logging
 from crawler.utils import metrics
 
@@ -41,6 +43,8 @@ class CrawlerStats:
     bytes_downloaded: int = 0
     links_discovered: int = 0
     domains_crawled: set[str] = field(default_factory=set)
+    structures_analyzed: int = 0
+    structure_changes_detected: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -56,6 +60,8 @@ class CrawlerStats:
             "bytes_downloaded": self.bytes_downloaded,
             "links_discovered": self.links_discovered,
             "domains_crawled": len(self.domains_crawled),
+            "structures_analyzed": self.structures_analyzed,
+            "structure_changes_detected": self.structure_changes_detected,
         }
 
 
@@ -93,6 +99,8 @@ class Crawler:
         self._fetcher: Fetcher | None = None
         self._scheduler: Scheduler | None = None
         self._link_extractor: LinkExtractor | None = None
+        self._structure_analyzer: StructureAnalyzer | None = None
+        self._structure_store: StructureStore | None = None
 
         # State
         self._running = False
@@ -185,6 +193,13 @@ class Crawler:
             logger=self.logger,
         )
 
+        # Initialize structure analyzer and store
+        self._structure_analyzer = StructureAnalyzer(logger=self.logger)
+        self._structure_store = StructureStore(
+            redis_client=self._redis,
+            logger=self.logger,
+        )
+
         self._running = True
         self.logger.info("Crawler started")
 
@@ -255,6 +270,8 @@ class Crawler:
         assert self._fetcher is not None
         assert self._scheduler is not None
         assert self._link_extractor is not None
+        assert self._structure_analyzer is not None
+        assert self._structure_store is not None
 
         url = entry.url
 
@@ -278,6 +295,9 @@ class Crawler:
                     parent_url=url,
                     parent_depth=entry.depth,
                 )
+
+                # Analyze and store page structure
+                await self._analyze_structure(url, result.html, entry.domain)
 
             # Save content
             await self._save_content(url, result)
@@ -308,6 +328,61 @@ class Crawler:
             # Error callbacks
             for callback in self._on_error:
                 await self._safe_callback(callback, url, result)
+
+    async def _analyze_structure(self, url: str, html: str, domain: str) -> None:
+        """Analyze page structure and store if changed."""
+        assert self._structure_analyzer is not None
+        assert self._structure_store is not None
+
+        try:
+            # Analyze the page structure
+            structure = self._structure_analyzer.analyze(html, url)
+            self._stats.structures_analyzed += 1
+
+            # Check if structure has changed
+            if await self._structure_store.has_changed(structure, url):
+                # Get previous structure for comparison logging
+                previous = await self._structure_store.get_latest(domain, structure.page_type)
+                
+                if previous:
+                    similarity = self._structure_analyzer.compare(previous, structure)
+                    self.logger.info(
+                        "Structure change detected",
+                        domain=domain,
+                        page_type=structure.page_type,
+                        similarity=f"{similarity:.2%}",
+                        previous_version=previous.version,
+                    )
+                    self._stats.structure_changes_detected += 1
+                    
+                    # Record metric
+                    metrics.record_structure_change(
+                        domain=domain,
+                        change_type="content_change",
+                        breaking=similarity < 0.5,
+                    )
+                else:
+                    self.logger.debug(
+                        "New structure captured",
+                        domain=domain,
+                        page_type=structure.page_type,
+                    )
+
+                # Save the new structure
+                version = await self._structure_store.save(structure, url)
+                self.logger.debug(
+                    "Structure saved",
+                    domain=domain,
+                    page_type=structure.page_type,
+                    version=version,
+                )
+
+        except Exception as e:
+            self.logger.warning(
+                "Structure analysis failed",
+                url=url,
+                error=str(e),
+            )
 
     async def _save_content(self, url: str, result: FetchResult) -> None:
         """Save crawled content to disk."""
