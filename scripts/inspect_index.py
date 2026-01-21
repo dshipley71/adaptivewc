@@ -447,6 +447,25 @@ class CrawlerInspector:
             for sig in structure.script_signatures[:10]:
                 print(f"    - {sig}")
 
+        # Semantic description (for ML)
+        description = await self.structure_store.get_description(domain, page_type)
+        if description:
+            print(f"\n  Semantic Description (for ML embedding):")
+            # Word wrap the description
+            words = description.split()
+            lines = []
+            current_line = "    "
+            for word in words:
+                if len(current_line) + len(word) + 1 > 76:
+                    lines.append(current_line)
+                    current_line = "    " + word
+                else:
+                    current_line += " " + word if current_line != "    " else word
+            if current_line != "    ":
+                lines.append(current_line)
+            for line in lines:
+                print(line)
+
         return structure.to_dict()
 
     async def show_structure_history(self, domain: str, page_type: str = "unknown", limit: int = 10) -> list:
@@ -560,6 +579,54 @@ class CrawlerInspector:
             "classes_removed": list(removed_classes),
         }
 
+    async def show_semantic_description(self, domain: str, page_type: str = "unknown") -> str | None:
+        """Show semantic description suitable for ML embedding."""
+        description = await self.structure_store.get_description(domain, page_type)
+
+        print(f"\n{'='*60}")
+        print(f"SEMANTIC DESCRIPTION: {domain} [{page_type}]")
+        print(f"{'='*60}\n")
+
+        if description is None:
+            # Try to find any page type for this domain
+            all_domains = await self.structure_store.list_domains()
+            matching = [(d, pt) for d, pt in all_domains if d == domain]
+            
+            if matching:
+                print(f"  ❌ No description for page_type '{page_type}'")
+                print(f"  Available page types for {domain}:")
+                for d, pt in matching:
+                    print(f"    - {pt}")
+            else:
+                print(f"  ❌ No structures found for domain: {domain}")
+            return None
+
+        # Print description with word wrap
+        print("  Description for ML embedding:\n")
+        words = description.split()
+        current_line = "    "
+        for word in words:
+            if len(current_line) + len(word) + 1 > 76:
+                print(current_line)
+                current_line = "    " + word
+            else:
+                current_line += " " + word if current_line.strip() else "    " + word
+        if current_line.strip():
+            print(current_line)
+
+        # Show character count for context
+        print(f"\n  Character count: {len(description)}")
+        print(f"  Word count: {len(words)}")
+        
+        # Show if embedding exists
+        sig = await self.structure_store.get_signature(domain, page_type)
+        if sig and sig.embedding:
+            print(f"  Embedding: ✓ ({len(sig.embedding)} dimensions)")
+        else:
+            print(f"  Embedding: Not generated (enable with enable_embeddings=True)")
+
+        return description
+
 
 async def main():
     parser = argparse.ArgumentParser(
@@ -580,6 +647,7 @@ Examples:
     %(prog)s --structure example.com --page-type article  Show specific page type
     %(prog)s --structure-history example.com  Show structure versions
     %(prog)s --compare example.com 1 2  Compare structure versions
+    %(prog)s --description example.com  Show semantic description for ML
     %(prog)s --export state.json      Export full state to JSON
     %(prog)s --clear                  Clear all data (with confirm)
         """
@@ -601,6 +669,7 @@ Examples:
     parser.add_argument("--page-type", metavar="TYPE", default="unknown", help="Page type for structure commands (default: unknown)")
     parser.add_argument("--structure-history", metavar="DOMAIN", help="Show structure version history")
     parser.add_argument("--compare", nargs=3, metavar=("DOMAIN", "V1", "V2"), help="Compare two structure versions")
+    parser.add_argument("--description", metavar="DOMAIN", help="Show semantic description for ML embedding")
     
     parser.add_argument("--limit", type=int, default=20, help="Max results to show (default: 20)")
     parser.add_argument("--redis-url", default=None, help="Redis URL (default: from config or redis://localhost:6379/0)")
@@ -652,6 +721,8 @@ Examples:
         elif args.compare:
             domain, v1, v2 = args.compare
             await inspector.compare_structures(domain, args.page_type, int(v1), int(v2))
+        elif args.description:
+            await inspector.show_semantic_description(args.description, args.page_type)
         elif args.domains:
             await inspector.list_domains(args.limit)
         else:
