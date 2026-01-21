@@ -660,7 +660,7 @@ Examples:
             print()
             await inspector.list_domains(10)
     finally:
-        await client.close()
+        await client.aclose()
 
     return 0
 
