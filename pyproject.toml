@@ -1,0 +1,188 @@
+[project]
+name = "adaptive-crawler"
+version = "0.1.0"
+description = "Adaptive web crawler with legal compliance, robots.txt respect, and ML-based structure learning"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+keywords = ["crawler", "web-scraping", "adaptive", "gdpr", "compliance"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+]
+
+dependencies = [
+    # HTTP client
+    "httpx>=0.27.0,<0.28",
+    "httpx[http2]>=0.27.0,<0.28",
+    
+    # HTML parsing
+    "beautifulsoup4>=4.12.0,<5.0",
+    "lxml>=5.0.0,<6.0",
+    
+    # Configuration and validation
+    "pydantic>=2.0.0,<3.0",
+    "pydantic-settings>=2.0.0,<3.0",
+    
+    # Storage
+    "redis>=5.0.0,<6.0",
+    "aiosqlite>=0.20.0,<0.21",
+    
+    # Deduplication
+    "bloom-filter2>=2.0.0,<3.0",
+    
+    # ML for adaptive extraction
+    "lightgbm>=4.0.0,<5.0",
+    "sentence-transformers>=2.2.0,<3.0",
+    "numpy>=1.26.0,<2.0",
+    
+    # Async utilities
+    "asyncio-throttle>=1.0.0,<2.0",
+    "tenacity>=8.2.0,<9.0",
+    
+    # Metrics and monitoring
+    "prometheus-client>=0.20.0,<0.21",
+    
+    # Logging
+    "structlog>=24.0.0,<25.0",
+    
+    # CLI
+    "click>=8.1.0,<9.0",
+    "rich>=13.0.0,<14.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    # Testing
+    "pytest>=8.0.0,<9.0",
+    "pytest-asyncio>=0.23.0,<0.24",
+    "pytest-cov>=4.1.0,<5.0",
+    "pytest-mock>=3.12.0,<4.0",
+    "pytest-xdist>=3.5.0,<4.0",
+    "respx>=0.20.0,<0.21",  # HTTP mocking for httpx
+    "fakeredis>=2.20.0,<3.0",
+    
+    # Type checking
+    "mypy>=1.8.0,<2.0",
+    "types-redis>=4.6.0,<5.0",
+    "types-beautifulsoup4>=4.12.0,<5.0",
+    
+    # Linting and formatting
+    "ruff>=0.2.0,<0.3",
+    
+    # Documentation
+    "mkdocs>=1.5.0,<2.0",
+    "mkdocs-material>=9.5.0,<10.0",
+]
+
+js-rendering = [
+    "playwright>=1.40.0,<2.0",
+]
+
+alerting = [
+    "slack-sdk>=3.26.0,<4.0",
+    "sendgrid>=6.11.0,<7.0",
+]
+
+[project.scripts]
+crawler = "crawler.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/adaptive-crawler"
+Documentation = "https://github.com/yourusername/adaptive-crawler#readme"
+Repository = "https://github.com/yourusername/adaptive-crawler"
+Issues = "https://github.com/yourusername/adaptive-crawler/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["crawler"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-v --cov=crawler --cov-report=term-missing --cov-report=html"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["crawler"]
+branch = true
+omit = [
+    "crawler/__main__.py",
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+fail_under = 90
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_configs = true
+show_error_codes = true
+show_column_numbers = true
+
+[[tool.mypy.overrides]]
+module = [
+    "bloom_filter2.*",
+    "lightgbm.*",
+    "sentence_transformers.*",
+]
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "PTH",    # flake8-use-pathlib
+    "ERA",    # eradicate
+    "RUF",    # Ruff-specific
+    "ASYNC",  # flake8-async
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # function call in default argument
+]
+
+[tool.ruff.isort]
+known-first-party = ["crawler"]
+
+[tool.ruff.per-file-ignores]
+"tests/*" = ["ARG001", "S101"]
