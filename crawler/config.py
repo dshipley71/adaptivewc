@@ -44,6 +44,7 @@ class LLMProviderType(str, Enum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     OLLAMA = "ollama"
+    OLLAMA_CLOUD = "ollama-cloud"
 
 
 class CrawlerSettings(BaseSettings):

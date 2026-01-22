@@ -3,6 +3,11 @@ CLI entry point for the adaptive web crawler.
 
 Usage:
     python -m crawler --seed-url https://example.com --output ./data
+
+    # With ML embeddings and LLM descriptions:
+    python -m crawler --seed-url https://example.com --output ./data \
+        --enable-embeddings --embedding-model all-MiniLM-L6-v2 \
+        --llm-provider ollama-cloud --llm-model gemma2:27b
 """
 
 import asyncio
@@ -17,10 +22,13 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from crawler.config import (
     CrawlConfig,
     GDPRConfig,
+    LLMProviderType,
     PIIHandlingConfig,
     RateLimitConfig,
     SafetyLimits,
     SecurityConfig,
+    StructureStoreConfig,
+    StructureStoreType,
     load_config,
 )
 from crawler.core.crawler import Crawler
@@ -94,6 +102,37 @@ console = Console()
     is_flag=True,
     help="Enable verbose logging.",
 )
+# ML and LLM options
+@click.option(
+    "--enable-embeddings",
+    is_flag=True,
+    default=False,
+    help="Enable ML embeddings for structure analysis.",
+)
+@click.option(
+    "--embedding-model",
+    type=str,
+    default="all-MiniLM-L6-v2",
+    help="Embedding model name (default: all-MiniLM-L6-v2).",
+)
+@click.option(
+    "--llm-provider",
+    type=click.Choice(["none", "openai", "anthropic", "ollama", "ollama-cloud"]),
+    default="none",
+    help="LLM provider for structure descriptions (default: none).",
+)
+@click.option(
+    "--llm-model",
+    type=str,
+    default="",
+    help="LLM model name (default: provider-specific, e.g., gpt-4o-mini, llama3.2, gemma2:27b).",
+)
+@click.option(
+    "--ollama-url",
+    type=str,
+    default="http://localhost:11434",
+    help="Ollama base URL (default: http://localhost:11434).",
+)
 def main(
     seed_url: tuple[str, ...],
     output: str,
@@ -105,6 +144,11 @@ def main(
     respect_robots: bool,
     redis_url: str | None,
     verbose: bool,
+    enable_embeddings: bool,
+    embedding_model: str,
+    llm_provider: str,
+    llm_model: str,
+    ollama_url: str,
 ) -> None:
     """
     Adaptive Web Crawler - Ethical, compliant web crawling with ML-based adaptation.
@@ -129,8 +173,27 @@ def main(
     if not respect_robots:
         console.print("[yellow]Warning: robots.txt will be ignored![/yellow]")
 
+    # Display ML settings
+    if enable_embeddings:
+        console.print(f"[cyan]ML Embeddings: enabled ({embedding_model})[/cyan]")
+    if llm_provider != "none":
+        model_display = llm_model or "(provider default)"
+        console.print(f"[cyan]LLM Descriptions: {llm_provider} {model_display}[/cyan]")
+        if llm_provider in ("ollama", "ollama-cloud"):
+            console.print(f"[cyan]Ollama URL: {ollama_url}[/cyan]")
+
     # Determine Redis URL
     redis_connection = redis_url or os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+
+    # Create structure store configuration
+    structure_store_config = StructureStoreConfig(
+        enable_embeddings=enable_embeddings,
+        embedding_model=embedding_model,
+        store_type=StructureStoreType.LLM if llm_provider != "none" else StructureStoreType.BASIC,
+        llm_provider=LLMProviderType(llm_provider) if llm_provider != "none" else LLMProviderType.ANTHROPIC,
+        llm_model=llm_model,
+        ollama_base_url=ollama_url,
+    )
 
     # Create crawl configuration
     config = CrawlConfig(
@@ -147,6 +210,7 @@ def main(
         security=SecurityConfig(),
         gdpr=GDPRConfig(enabled=False),  # Disabled by default for CLI
         pii=PIIHandlingConfig(),
+        structure_store=structure_store_config,
     )
 
     # Run the crawler
