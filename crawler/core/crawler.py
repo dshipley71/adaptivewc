@@ -30,8 +30,6 @@ from crawler.models import FetchResult, FetchStatus
 from crawler.storage.robots_cache import RobotsCache
 from crawler.storage.structure_store import StructureStore
 from crawler.storage.url_store import URLStore, URLEntry
-from crawler.storage.factory import create_structure_store, AnyStructureStore
-from crawler.adaptive.structure_analyzer import StructureAnalyzer
 from crawler.utils.logging import CrawlerLogger, setup_logging
 from crawler.utils import metrics
 
@@ -379,7 +377,7 @@ class Crawler:
         try:
             # Analyze current page structure
             page_type = self._classify_page_type(url)
-            current_structure = self._structure_analyzer.analyze(html, url, domain, page_type)
+            current_structure = self._structure_analyzer.analyze(html, url, page_type)
 
             # Check for existing structure
             stored_structure = await self._structure_store.get_structure(domain, page_type)
@@ -398,7 +396,7 @@ class Crawler:
                         new_strategy = self._strategy_learner.adapt(
                             old_strategy, current_structure, html
                         )
-                        await self._structure_store.update_structure(
+                        await self._structure_store.update(
                             domain, page_type, current_structure,
                             new_strategy.strategy,
                             f"Structure changed: {analysis.classification.value}"

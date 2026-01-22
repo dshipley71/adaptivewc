@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from crawler.models import ChangeType, PageStructure, StructureChange, Severity
+from crawler.models import ChangeType, PageStructure, StructureChange
 from crawler.utils.logging import CrawlerLogger
 
 
@@ -39,7 +39,7 @@ class ChangeAnalysis:
             "has_changes": self.has_changes,
             "classification": self.classification.value,
             "similarity_score": self.similarity_score,
-            "changes": [c.to_dict() for c in self.changes],
+            "change_count": len(self.changes),
             "requires_relearning": self.requires_relearning,
             "analyzed_at": self.analyzed_at.isoformat(),
         }
@@ -101,59 +101,102 @@ class ChangeDetector:
             ChangeAnalysis with detailed breakdown.
         """
         changes: list[StructureChange] = []
+        now = datetime.utcnow()
 
         # Compare tag hierarchy
         hierarchy_sim = self._compare_hierarchy(old_structure, new_structure)
-        if hierarchy_sim < 1.0:
-            changes.append(self._create_change(
-                ChangeType.HIERARCHY_CHANGED,
-                f"Tag hierarchy similarity: {hierarchy_sim:.2%}",
-                1.0 - hierarchy_sim,
+        if hierarchy_sim < 0.9:
+            changes.append(StructureChange(
+                domain=new_structure.domain,
+                page_type=new_structure.page_type,
+                detected_at=now,
+                previous_version=old_structure.version,
+                new_version=new_structure.version,
+                change_type=ChangeType.STRUCTURE_REORGANIZED,
+                affected_components=["tag_hierarchy"],
+                reason=f"Tag hierarchy similarity: {hierarchy_sim:.2%}",
+                breaking=hierarchy_sim < self.breaking_threshold,
+                confidence=1.0 - hierarchy_sim,
             ))
 
         # Compare content regions
         regions_sim = self._compare_regions(old_structure, new_structure)
-        if regions_sim < 1.0:
-            changes.append(self._create_change(
-                ChangeType.CONTENT_REGION_MOVED,
-                f"Content regions similarity: {regions_sim:.2%}",
-                1.0 - regions_sim,
+        if regions_sim < 0.9:
+            changes.append(StructureChange(
+                domain=new_structure.domain,
+                page_type=new_structure.page_type,
+                detected_at=now,
+                previous_version=old_structure.version,
+                new_version=new_structure.version,
+                change_type=ChangeType.CONTENT_RELOCATED,
+                affected_components=["content_regions"],
+                reason=f"Content regions similarity: {regions_sim:.2%}",
+                breaking=regions_sim < self.breaking_threshold,
+                confidence=1.0 - regions_sim,
             ))
 
         # Compare navigation
         nav_sim = self._compare_navigation(old_structure, new_structure)
-        if nav_sim < 1.0:
-            changes.append(self._create_change(
-                ChangeType.NAVIGATION_CHANGED,
-                f"Navigation similarity: {nav_sim:.2%}",
-                1.0 - nav_sim,
+        if nav_sim < 0.9:
+            changes.append(StructureChange(
+                domain=new_structure.domain,
+                page_type=new_structure.page_type,
+                detected_at=now,
+                previous_version=old_structure.version,
+                new_version=new_structure.version,
+                change_type=ChangeType.URL_PATTERN_CHANGED,
+                affected_components=["navigation"],
+                reason=f"Navigation similarity: {nav_sim:.2%}",
+                breaking=nav_sim < self.breaking_threshold,
+                confidence=1.0 - nav_sim,
             ))
 
         # Compare landmarks
         landmarks_sim = self._compare_landmarks(old_structure, new_structure)
-        if landmarks_sim < 1.0:
-            changes.append(self._create_change(
-                ChangeType.LANDMARK_REMOVED,
-                f"Landmarks similarity: {landmarks_sim:.2%}",
-                1.0 - landmarks_sim,
+        if landmarks_sim < 0.9:
+            changes.append(StructureChange(
+                domain=new_structure.domain,
+                page_type=new_structure.page_type,
+                detected_at=now,
+                previous_version=old_structure.version,
+                new_version=new_structure.version,
+                change_type=ChangeType.STRUCTURE_REORGANIZED,
+                affected_components=["semantic_landmarks"],
+                reason=f"Landmarks similarity: {landmarks_sim:.2%}",
+                breaking=landmarks_sim < self.breaking_threshold,
+                confidence=1.0 - landmarks_sim,
             ))
 
         # Compare CSS classes
         css_sim = self._compare_css_classes(old_structure, new_structure)
-        if css_sim < 1.0:
-            changes.append(self._create_change(
-                ChangeType.CSS_CLASS_RENAMED,
-                f"CSS classes similarity: {css_sim:.2%}",
-                1.0 - css_sim,
+        if css_sim < 0.9:
+            changes.append(StructureChange(
+                domain=new_structure.domain,
+                page_type=new_structure.page_type,
+                detected_at=now,
+                previous_version=old_structure.version,
+                new_version=new_structure.version,
+                change_type=ChangeType.CLASS_RENAMED,
+                affected_components=["css_classes"],
+                reason=f"CSS classes similarity: {css_sim:.2%}",
+                breaking=css_sim < self.breaking_threshold,
+                confidence=1.0 - css_sim,
             ))
 
         # Compare IDs
         ids_sim = self._compare_ids(old_structure, new_structure)
-        if ids_sim < 1.0:
-            changes.append(self._create_change(
-                ChangeType.ID_CHANGED,
-                f"IDs similarity: {ids_sim:.2%}",
-                1.0 - ids_sim,
+        if ids_sim < 0.9:
+            changes.append(StructureChange(
+                domain=new_structure.domain,
+                page_type=new_structure.page_type,
+                detected_at=now,
+                previous_version=old_structure.version,
+                new_version=new_structure.version,
+                change_type=ChangeType.ID_CHANGED,
+                affected_components=["id_attributes"],
+                reason=f"IDs similarity: {ids_sim:.2%}",
+                breaking=ids_sim < self.breaking_threshold,
+                confidence=1.0 - ids_sim,
             ))
 
         # Calculate weighted overall similarity
@@ -179,10 +222,11 @@ class ChangeDetector:
         )
 
         if analysis.has_changes:
-            self.logger.structure_change(
+            self.logger.info(
+                "Structure change detected",
                 domain=new_structure.domain,
                 page_type=new_structure.page_type,
-                similarity=overall_similarity,
+                similarity=f"{overall_similarity:.2%}",
                 classification=classification.value,
                 requires_relearning=requires_relearning,
             )
@@ -213,12 +257,14 @@ class ChangeDetector:
         new: PageStructure,
     ) -> float:
         """Compare tag hierarchy fingerprints."""
-        if old.tag_hierarchy_hash == new.tag_hierarchy_hash:
-            return 1.0
+        # Compare content hash first for quick check
+        if old.content_hash and new.content_hash:
+            if old.content_hash == new.content_hash:
+                return 1.0
 
-        # Compare tag counts
-        old_tags = old.tag_counts or {}
-        new_tags = new.tag_counts or {}
+        # Compare tag counts from tag_hierarchy
+        old_tags = old.tag_hierarchy.get("tag_counts", {}) if old.tag_hierarchy else {}
+        new_tags = new.tag_hierarchy.get("tag_counts", {}) if new.tag_hierarchy else {}
 
         if not old_tags and not new_tags:
             return 1.0
@@ -243,8 +289,8 @@ class ChangeDetector:
         new: PageStructure,
     ) -> float:
         """Compare content regions."""
-        old_regions = {r.region_type for r in (old.content_regions or [])}
-        new_regions = {r.region_type for r in (new.content_regions or [])}
+        old_regions = {r.name for r in (old.content_regions or [])}
+        new_regions = {r.name for r in (new.content_regions or [])}
 
         if not old_regions and not new_regions:
             return 1.0
@@ -277,8 +323,8 @@ class ChangeDetector:
         new: PageStructure,
     ) -> float:
         """Compare semantic landmarks."""
-        old_landmarks = set(old.semantic_landmarks or [])
-        new_landmarks = set(new.semantic_landmarks or [])
+        old_landmarks = set((old.semantic_landmarks or {}).keys())
+        new_landmarks = set((new.semantic_landmarks or {}).keys())
 
         if not old_landmarks and not new_landmarks:
             return 1.0
@@ -294,30 +340,26 @@ class ChangeDetector:
         new: PageStructure,
     ) -> float:
         """Compare CSS class usage."""
-        old_classes = set((old.css_class_counts or {}).keys())
-        new_classes = set((new.css_class_counts or {}).keys())
+        old_classes = set((old.css_class_map or {}).keys())
+        new_classes = set((new.css_class_map or {}).keys())
 
         if not old_classes and not new_classes:
             return 1.0
 
         # Focus on top classes by frequency
-        old_top = set(
-            sorted(
-                (old.css_class_counts or {}).items(),
-                key=lambda x: x[1],
-                reverse=True,
-            )[:50]
-        )
-        new_top = set(
-            sorted(
-                (new.css_class_counts or {}).items(),
-                key=lambda x: x[1],
-                reverse=True,
-            )[:50]
-        )
+        old_sorted = sorted(
+            (old.css_class_map or {}).items(),
+            key=lambda x: x[1],
+            reverse=True,
+        )[:50]
+        new_sorted = sorted(
+            (new.css_class_map or {}).items(),
+            key=lambda x: x[1],
+            reverse=True,
+        )[:50]
 
-        old_names = {name for name, _ in old_top}
-        new_names = {name for name, _ in new_top}
+        old_names = {name for name, _ in old_sorted}
+        new_names = {name for name, _ in new_sorted}
 
         intersection = old_names & new_names
         union = old_names | new_names
@@ -330,8 +372,8 @@ class ChangeDetector:
         new: PageStructure,
     ) -> float:
         """Compare element IDs."""
-        old_ids = set(old.id_attributes or [])
-        new_ids = set(new.id_attributes or [])
+        old_ids = old.id_attributes or set()
+        new_ids = new.id_attributes or set()
 
         if not old_ids and not new_ids:
             return 1.0
@@ -351,29 +393,3 @@ class ChangeDetector:
             return ChangeClassification.MODERATE
         else:
             return ChangeClassification.BREAKING
-
-    def _create_change(
-        self,
-        change_type: ChangeType,
-        description: str,
-        magnitude: float,
-    ) -> StructureChange:
-        """Create a StructureChange record."""
-        # Determine severity based on magnitude
-        if magnitude < 0.1:
-            severity = Severity.LOW
-        elif magnitude < 0.3:
-            severity = Severity.MEDIUM
-        elif magnitude < 0.5:
-            severity = Severity.HIGH
-        else:
-            severity = Severity.CRITICAL
-
-        return StructureChange(
-            change_type=change_type,
-            severity=severity,
-            old_value=None,
-            new_value=None,
-            selector=None,
-            description=description,
-        )
