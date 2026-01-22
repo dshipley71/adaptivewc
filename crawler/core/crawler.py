@@ -14,16 +14,21 @@ from typing import Any, Callable
 
 import redis.asyncio as redis
 
+from crawler.adaptive.change_detector import ChangeDetector
+from crawler.adaptive.strategy_learner import StrategyLearner
+from crawler.adaptive.structure_analyzer import StructureAnalyzer
 from crawler.compliance.rate_limiter import RateLimiter
 from crawler.compliance.robots_parser import RobotsChecker
 from crawler.config import CrawlConfig, GDPRConfig, PIIHandlingConfig, RateLimitConfig
 from crawler.core.fetcher import Fetcher, FetcherConfig
 from crawler.core.scheduler import Scheduler, SchedulerConfig
+from crawler.exceptions import StorageError
 from crawler.extraction.link_extractor import LinkExtractor
 from crawler.legal.cfaa_checker import CFAAChecker
 from crawler.legal.pii_detector import PIIDetector
 from crawler.models import FetchResult, FetchStatus
 from crawler.storage.robots_cache import RobotsCache
+from crawler.storage.structure_store import StructureStore
 from crawler.storage.url_store import URLStore, URLEntry
 from crawler.utils.logging import CrawlerLogger, setup_logging
 from crawler.utils import metrics
@@ -40,6 +45,8 @@ class CrawlerStats:
     pages_blocked: int = 0
     bytes_downloaded: int = 0
     links_discovered: int = 0
+    structures_learned: int = 0
+    structures_adapted: int = 0
     domains_crawled: set[str] = field(default_factory=set)
 
     def to_dict(self) -> dict[str, Any]:
@@ -55,6 +62,8 @@ class CrawlerStats:
             "pages_blocked": self.pages_blocked,
             "bytes_downloaded": self.bytes_downloaded,
             "links_discovered": self.links_discovered,
+            "structures_learned": self.structures_learned,
+            "structures_adapted": self.structures_adapted,
             "domains_crawled": len(self.domains_crawled),
         }
 
@@ -64,7 +73,8 @@ class Crawler:
     Main crawler orchestrator.
 
     Coordinates fetching, extraction, and storage components
-    to perform web crawling with compliance checks.
+    to perform web crawling with compliance checks and
+    adaptive structure learning.
     """
 
     def __init__(
@@ -94,10 +104,17 @@ class Crawler:
         self._scheduler: Scheduler | None = None
         self._link_extractor: LinkExtractor | None = None
 
+        # Adaptive extraction components
+        self._structure_analyzer: StructureAnalyzer | None = None
+        self._change_detector: ChangeDetector | None = None
+        self._strategy_learner: StrategyLearner | None = None
+        self._structure_store: StructureStore | None = None
+
         # State
         self._running = False
         self._stats = CrawlerStats()
         self._output_dir = Path(config.output_dir)
+        self._file_lock = asyncio.Lock()
 
         # Callbacks
         self._on_page_crawled: list[Callable] = []
@@ -108,10 +125,20 @@ class Crawler:
         self.logger.info("Starting crawler", output_dir=str(self._output_dir))
 
         # Ensure output directory exists
-        self._output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self._output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self.logger.error("Failed to create output directory", error=str(e))
+            raise StorageError(f"Cannot create output directory: {e}")
 
         # Connect to Redis
-        self._redis = redis.from_url(self.redis_url)
+        try:
+            self._redis = redis.from_url(self.redis_url)
+            # Test connection
+            await self._redis.ping()
+        except Exception as e:
+            self.logger.error("Failed to connect to Redis", error=str(e))
+            raise ConnectionError(f"Cannot connect to Redis at {self.redis_url}: {e}")
 
         # Initialize components
         rate_limiter = RateLimiter(
@@ -185,6 +212,15 @@ class Crawler:
             logger=self.logger,
         )
 
+        # Initialize adaptive extraction components
+        self._structure_analyzer = StructureAnalyzer(logger=self.logger)
+        self._change_detector = ChangeDetector(logger=self.logger)
+        self._strategy_learner = StrategyLearner(logger=self.logger)
+        self._structure_store = StructureStore(
+            redis_client=self._redis,
+            logger=self.logger,
+        )
+
         self._running = True
         self.logger.info("Crawler started")
 
@@ -192,11 +228,17 @@ class Crawler:
         """Stop the crawler and cleanup."""
         self._running = False
 
-        if self._fetcher:
-            await self._fetcher.stop()
+        try:
+            if self._fetcher:
+                await self._fetcher.stop()
+        except Exception as e:
+            self.logger.error("Error stopping fetcher", error=str(e))
 
-        if self._redis:
-            await self._redis.aclose()
+        try:
+            if self._redis:
+                await self._redis.aclose()
+        except Exception as e:
+            self.logger.error("Error closing Redis connection", error=str(e))
 
         self._stats.finished_at = datetime.utcnow()
         self.logger.info("Crawler stopped", stats=self._stats.to_dict())
@@ -208,8 +250,11 @@ class Crawler:
             str(self._output_dir / "legal_blocklist.txt"),
         ]
         for path in paths:
-            if os.path.exists(path):
-                return path
+            try:
+                if os.path.exists(path):
+                    return path
+            except OSError:
+                continue
         return None
 
     async def crawl(self) -> CrawlerStats:
@@ -240,7 +285,11 @@ class Crawler:
                 continue
 
             # Crawl the URL
-            await self._crawl_url(entry)
+            try:
+                await self._crawl_url(entry)
+            except Exception as e:
+                self.logger.error("Unexpected error crawling URL", url=entry.url, error=str(e))
+                self._stats.pages_failed += 1
 
             # Log progress periodically
             if self._stats.pages_crawled % 10 == 0:
@@ -279,6 +328,9 @@ class Crawler:
                     parent_depth=entry.depth,
                 )
 
+                # Perform adaptive structure analysis
+                await self._analyze_structure(url, result.html, entry.domain)
+
             # Save content
             await self._save_content(url, result)
 
@@ -309,30 +361,111 @@ class Crawler:
             for callback in self._on_error:
                 await self._safe_callback(callback, url, result)
 
+    async def _analyze_structure(self, url: str, html: str, domain: str) -> None:
+        """Analyze page structure for adaptive extraction."""
+        if not self._structure_analyzer or not self._structure_store:
+            return
+
+        try:
+            # Analyze current page structure
+            page_type = self._classify_page_type(url)
+            current_structure = self._structure_analyzer.analyze(html, url, domain, page_type)
+
+            # Check for existing structure
+            stored_structure = await self._structure_store.get_structure(domain, page_type)
+
+            if stored_structure:
+                # Compare with stored structure
+                assert self._change_detector is not None
+                analysis = self._change_detector.detect_changes(stored_structure, current_structure)
+
+                if analysis.requires_relearning:
+                    # Structure changed significantly - adapt strategy
+                    assert self._strategy_learner is not None
+                    old_strategy = await self._structure_store.get_strategy(domain, page_type)
+
+                    if old_strategy:
+                        new_strategy = self._strategy_learner.adapt(
+                            old_strategy, current_structure, html
+                        )
+                        await self._structure_store.update_structure(
+                            domain, page_type, current_structure,
+                            new_strategy.strategy,
+                            f"Structure changed: {analysis.classification.value}"
+                        )
+                        self._stats.structures_adapted += 1
+                        self.logger.info(
+                            "Adapted extraction strategy",
+                            domain=domain,
+                            page_type=page_type,
+                            similarity=analysis.similarity_score,
+                        )
+            else:
+                # New structure - learn strategy
+                assert self._strategy_learner is not None
+                learned = self._strategy_learner.infer(html, current_structure)
+                await self._structure_store.save_structure(current_structure, learned.strategy)
+                self._stats.structures_learned += 1
+                self.logger.info(
+                    "Learned new extraction strategy",
+                    domain=domain,
+                    page_type=page_type,
+                    confidence=learned.confidence,
+                )
+
+        except Exception as e:
+            self.logger.debug("Structure analysis failed", url=url, error=str(e))
+
+    def _classify_page_type(self, url: str) -> str:
+        """Classify the page type from URL patterns."""
+        url_lower = url.lower()
+
+        if any(p in url_lower for p in ["/article", "/post", "/blog", "/news"]):
+            return "article"
+        elif any(p in url_lower for p in ["/product", "/item", "/shop"]):
+            return "product"
+        elif any(p in url_lower for p in ["/category", "/tag", "/archive"]):
+            return "listing"
+        elif url_lower.rstrip("/").endswith((".com", ".org", ".net", ".io")):
+            return "homepage"
+        else:
+            return "general"
+
     async def _save_content(self, url: str, result: FetchResult) -> None:
-        """Save crawled content to disk."""
-        # Create safe filename from URL
-        safe_name = self._url_to_filename(url)
-        filepath = self._output_dir / f"{safe_name}.json"
+        """Save crawled content to disk with proper error handling."""
+        try:
+            # Create safe filename from URL
+            safe_name = self._url_to_filename(url)
+            filepath = self._output_dir / f"{safe_name}.json"
 
-        data = {
-            "url": url,
-            "fetched_at": result.fetched_at.isoformat(),
-            "status_code": result.status_code,
-            "content_length": len(result.content or b""),
-            "headers": result.headers,
-        }
+            data = {
+                "url": url,
+                "fetched_at": result.fetched_at.isoformat(),
+                "status_code": result.status_code,
+                "content_length": len(result.content or b""),
+                "headers": result.headers,
+            }
 
-        # Save metadata
-        async with asyncio.Lock():
-            with open(filepath, "w") as f:
-                json.dump(data, f, indent=2)
+            # Save metadata with file lock
+            async with self._file_lock:
+                try:
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2)
+                except IOError as e:
+                    self.logger.error("Failed to save metadata", url=url, path=str(filepath), error=str(e))
+                    return
 
-        # Save HTML content
-        if result.html:
-            html_path = self._output_dir / f"{safe_name}.html"
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write(result.html)
+            # Save HTML content
+            if result.html:
+                html_path = self._output_dir / f"{safe_name}.html"
+                try:
+                    with open(html_path, "w", encoding="utf-8") as f:
+                        f.write(result.html)
+                except IOError as e:
+                    self.logger.error("Failed to save HTML", url=url, path=str(html_path), error=str(e))
+
+        except Exception as e:
+            self.logger.error("Unexpected error saving content", url=url, error=str(e))
 
     def _url_to_filename(self, url: str) -> str:
         """Convert URL to safe filename."""
