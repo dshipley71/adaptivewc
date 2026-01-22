@@ -30,6 +30,8 @@ from crawler.models import FetchResult, FetchStatus
 from crawler.storage.robots_cache import RobotsCache
 from crawler.storage.structure_store import StructureStore
 from crawler.storage.url_store import URLStore, URLEntry
+from crawler.storage.factory import create_structure_store, AnyStructureStore
+from crawler.adaptive.structure_analyzer import StructureAnalyzer
 from crawler.utils.logging import CrawlerLogger, setup_logging
 from crawler.utils import metrics
 
@@ -48,6 +50,8 @@ class CrawlerStats:
     structures_learned: int = 0
     structures_adapted: int = 0
     domains_crawled: set[str] = field(default_factory=set)
+    structures_analyzed: int = 0
+    structure_changes_detected: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -65,6 +69,8 @@ class CrawlerStats:
             "structures_learned": self.structures_learned,
             "structures_adapted": self.structures_adapted,
             "domains_crawled": len(self.domains_crawled),
+            "structures_analyzed": self.structures_analyzed,
+            "structure_changes_detected": self.structure_changes_detected,
         }
 
 
@@ -103,6 +109,8 @@ class Crawler:
         self._fetcher: Fetcher | None = None
         self._scheduler: Scheduler | None = None
         self._link_extractor: LinkExtractor | None = None
+        self._structure_analyzer: StructureAnalyzer | None = None
+        self._structure_store: AnyStructureStore | None = None
 
         # Adaptive extraction components
         self._structure_analyzer: StructureAnalyzer | None = None
@@ -304,6 +312,8 @@ class Crawler:
         assert self._fetcher is not None
         assert self._scheduler is not None
         assert self._link_extractor is not None
+        assert self._structure_analyzer is not None
+        assert self._structure_store is not None
 
         url = entry.url
 

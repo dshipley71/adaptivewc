@@ -1,0 +1,55 @@
+# =============================================================================
+# Adaptive Web Crawler - Fast/Minimal Configuration
+# =============================================================================
+# 
+# This configuration uses rule-based descriptions (no LLM) for fast crawling.
+# Best for high-volume crawling where speed is more important than
+# rich semantic descriptions.
+#
+# =============================================================================
+
+crawl:
+  seed_urls:
+    - "https://example.com"
+  output_dir: "./output"
+  max_depth: 10
+  max_pages: 10000
+  allowed_domains: []
+  exclude_patterns:
+    - "*.pdf"
+    - "*.zip"
+    - "*/admin/*"
+    - "*/login/*"
+
+identity:
+  user_agent: "AdaptiveCrawler/1.0 (+https://example.com/bot)"
+
+redis:
+  url: "redis://localhost:6379/0"
+
+rate_limit:
+  default_delay: 0.5          # Faster crawling
+  max_concurrent_per_domain: 2
+  max_concurrent_global: 20
+
+# -----------------------------------------------------------------------------
+# Fast Rule-Based Structure Store
+# -----------------------------------------------------------------------------
+structure_store:
+  store_type: "basic"         # Rule-based descriptions (no LLM calls)
+  enable_embeddings: false    # Disable embeddings for speed
+  ttl_seconds: 604800
+  max_versions: 5
+
+adaptive:
+  enabled: true
+  change_threshold: 0.3
+
+safety:
+  max_page_size_mb: 5.0
+  request_timeout_seconds: 15.0
+  max_retries: 2
+
+logging:
+  level: "WARNING"            # Less verbose logging
+  format: "json"

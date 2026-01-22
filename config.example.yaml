@@ -1,0 +1,206 @@
+# =============================================================================
+# Adaptive Web Crawler Configuration
+# =============================================================================
+# 
+# Copy this file to config.yaml and customize for your crawl job.
+# Environment variables can override any setting using CRAWLER_ prefix.
+# Example: CRAWLER_REDIS_URL overrides redis.url
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Crawl Job Settings
+# -----------------------------------------------------------------------------
+crawl:
+  seed_urls:
+    - "https://example.com"
+  output_dir: "./output"
+  max_depth: 10
+  max_pages: null  # null = unlimited
+  allowed_domains: []  # Empty = allow all from seed domains
+  exclude_patterns:
+    - "*.pdf"
+    - "*/admin/*"
+    - "*/login/*"
+
+# -----------------------------------------------------------------------------
+# Identity
+# -----------------------------------------------------------------------------
+identity:
+  user_agent: "AdaptiveCrawler/1.0 (+https://example.com/bot; bot@example.com)"
+
+# -----------------------------------------------------------------------------
+# Redis Configuration
+# -----------------------------------------------------------------------------
+redis:
+  url: "redis://localhost:6379/0"
+
+# -----------------------------------------------------------------------------
+# Rate Limiting
+# -----------------------------------------------------------------------------
+rate_limit:
+  default_delay: 1.0          # Seconds between requests to same domain
+  min_delay: 0.5              # Minimum delay
+  max_delay: 60.0             # Maximum delay (for backoff)
+  respect_crawl_delay: true   # Honor robots.txt Crawl-delay
+  adaptive: true              # Adjust based on server response times
+  backoff_multiplier: 2.0     # Multiply delay on errors
+  max_concurrent_per_domain: 1
+  max_concurrent_global: 10
+
+# -----------------------------------------------------------------------------
+# Structure Store Configuration
+# -----------------------------------------------------------------------------
+# Controls how page structures are analyzed and stored for change detection.
+#
+# store_type options:
+#   - "basic": Rule-based semantic descriptions (fast, no API calls)
+#   - "llm": LLM-powered descriptions (richer, requires API)
+#
+# -----------------------------------------------------------------------------
+structure_store:
+  store_type: "basic"         # "basic" or "llm"
+  enable_embeddings: false    # Generate vector embeddings for similarity search
+  embedding_model: "all-MiniLM-L6-v2"
+  ttl_seconds: 604800         # 7 days
+  max_versions: 10            # Keep last N versions per page type
+
+  # LLM settings (only used when store_type: "llm")
+  llm:
+    provider: "anthropic"     # "anthropic", "openai", or "ollama"
+    model: ""                 # Empty = use provider default
+    api_key: ""               # Empty = use environment variable (recommended)
+    
+    # Ollama-specific settings
+    ollama_base_url: "http://localhost:11434"
+
+# -----------------------------------------------------------------------------
+# Adaptive Extraction
+# -----------------------------------------------------------------------------
+adaptive:
+  enabled: true
+  change_threshold: 0.3       # Similarity below this triggers re-learning
+
+# -----------------------------------------------------------------------------
+# Safety Limits
+# -----------------------------------------------------------------------------
+safety:
+  max_page_size_mb: 10.0
+  request_timeout_seconds: 30.0
+  max_retries: 3
+  circuit_breaker_threshold: 5    # Failures before opening circuit
+  circuit_breaker_timeout: 300.0  # Seconds before retry
+
+# -----------------------------------------------------------------------------
+# Security
+# -----------------------------------------------------------------------------
+security:
+  verify_ssl: true
+  block_private_ips: true
+  max_redirects: 10
+  allowed_schemes:
+    - "http"
+    - "https"
+
+# -----------------------------------------------------------------------------
+# Robots.txt
+# -----------------------------------------------------------------------------
+robots:
+  cache_ttl: 86400            # 24 hours
+  respect_tos: true
+
+# -----------------------------------------------------------------------------
+# GDPR Compliance
+# -----------------------------------------------------------------------------
+gdpr:
+  enabled: true
+  lawful_basis: "legitimate_interest"  # legitimate_interest, consent, contract, legal_obligation
+  legitimate_interest_assessment: "Web indexing for search/research purposes"
+  collect_only:
+    - "url"
+    - "title"
+    - "content"
+    - "metadata"
+    - "published_date"
+  exclude_pii_patterns: true
+  retention_days: 365
+  retention_policy: "delete"
+  eu_domains_only: false
+  process_in_eu: true
+
+# -----------------------------------------------------------------------------
+# CCPA Compliance
+# -----------------------------------------------------------------------------
+ccpa:
+  enabled: true
+  disclosure_categories:
+    - "identifiers"
+    - "internet_activity"
+    - "geolocation"
+  deletion_verification: true
+  honor_gpc_header: true
+  do_not_sell: true
+
+# -----------------------------------------------------------------------------
+# PII Handling
+# -----------------------------------------------------------------------------
+pii:
+  action: "redact"            # redact, pseudonymize, exclude_page, flag_for_review
+  log_detections: true
+  alert_on_sensitive: true
+  sensitive_categories:
+    - "health"
+    - "financial"
+    - "biometric"
+    - "racial_ethnic"
+
+# -----------------------------------------------------------------------------
+# Proxy Configuration
+# -----------------------------------------------------------------------------
+proxy:
+  enabled: false
+  proxy_urls: []
+  rotation_strategy: "round_robin"
+  respect_rate_limits_per_proxy: true
+  aggregate_rate_limit: true
+  max_aggregate_rps: 10.0
+  health_check_interval: 300
+  failure_threshold: 3
+
+# -----------------------------------------------------------------------------
+# Politeness Settings
+# -----------------------------------------------------------------------------
+politeness:
+  prefer_off_peak: true
+  off_peak_hours: [1, 6]      # 1 AM to 6 AM
+  off_peak_rate_multiplier: 1.5
+  respect_server_timing: true
+  max_response_time_ms: 5000
+  retry_respectful: true
+  max_retry_delay: 3600.0
+
+# -----------------------------------------------------------------------------
+# Alerting
+# -----------------------------------------------------------------------------
+alerts:
+  slack_webhook: ""
+  email_to: ""
+  pagerduty_key: ""
+  webhook_url: ""
+  throttle_minutes: 60
+  aggregate: true
+  min_severity: "WARNING"
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+logging:
+  level: "INFO"               # DEBUG, INFO, WARNING, ERROR
+  format: "json"              # json or text
+
+# -----------------------------------------------------------------------------
+# Legal
+# -----------------------------------------------------------------------------
+legal:
+  dpo_email: ""
+  blocklist_path: "/etc/crawler/legal_blocklist.txt"
