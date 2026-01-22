@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""
+Train and use ML embeddings with crawled page structures.
+
+This script demonstrates how to:
+1. Export structure data for ML training
+2. Create embeddings using sentence-transformers
+3. Find similar page structures
+4. Train a page type classifier
+
+Usage:
+    # Export training data from Redis
+    python scripts/train_embeddings.py --export training_data.jsonl
+
+    # Create embeddings for all structures
+    python scripts/train_embeddings.py --embed
+
+    # Find similar structures to a domain
+    python scripts/train_embeddings.py --similar example.com
+
+    # Train a page type classifier
+    python scripts/train_embeddings.py --train-classifier
+
+    # Predict page type for a new structure
+    python scripts/train_embeddings.py --predict example.com
+
+Requirements:
+    pip install sentence-transformers scikit-learn
+"""
+
+import argparse
+import asyncio
+import json
+import sys
+from pathlib import Path
+
+import redis.asyncio as redis
+
+# Add crawler to path
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from crawler.config import load_config
+from crawler.storage.structure_store import StructureStore
+from crawler.ml.embeddings import (
+    StructureEmbeddingModel,
+    StructureClassifier,
+    StructureDescriptionGenerator,
+    export_training_data,
+    create_similarity_pairs,
+)
+
+
+async def get_all_structures(structure_store: StructureStore):
+    """Get all structures and strategies from Redis."""
+    domains = await structure_store.list_domains()
+    structures = []
+    strategies = []
+
+    for domain, page_type in domains:
+        structure = await structure_store.get_structure(domain, page_type)
+        strategy = await structure_store.get_strategy(domain, page_type)
+
+        if structure:
+            structures.append(structure)
+            strategies.append(strategy)
+
+    return structures, strategies
+
+
+async def cmd_export(args, structure_store: StructureStore):
+    """Export training data to JSONL."""
+    print(f"Exporting training data to {args.output}...")
+
+    structures, strategies = await get_all_structures(structure_store)
+
+    if not structures:
+        print("No structures found in Redis.")
+        return
+
+    # Filter out structures without strategies
+    pairs = [(s, st) for s, st in zip(structures, strategies) if st is not None]
+    if pairs:
+        structures, strategies = zip(*pairs)
+        export_training_data(list(structures), list(strategies), args.output)
+        print(f"Exported {len(structures)} structure-strategy pairs.")
+    else:
+        # Export structures only
+        desc_gen = StructureDescriptionGenerator()
+        with open(args.output, "w") as f:
+            for structure in structures:
+                record = {
+                    "text": desc_gen.generate(structure),
+                    "label": structure.page_type,
+                    "domain": structure.domain,
+                }
+                f.write(json.dumps(record) + "\n")
+        print(f"Exported {len(structures)} structures (no strategies).")
+
+
+async def cmd_embed(args, structure_store: StructureStore):
+    """Create embeddings for all structures."""
+    print("Creating embeddings...")
+
+    structures, _ = await get_all_structures(structure_store)
+
+    if not structures:
+        print("No structures found in Redis.")
+        return
+
+    model = StructureEmbeddingModel(model_name=args.model)
+    print(f"Using model: {args.model}")
+
+    embeddings = model.embed_structures_batch(structures)
+
+    # Save embeddings
+    output = args.output or "embeddings.json"
+    with open(output, "w") as f:
+        json.dump([e.to_dict() for e in embeddings], f, indent=2)
+
+    print(f"Created {len(embeddings)} embeddings.")
+    print(f"Saved to: {output}")
+
+    # Show sample
+    print("\nSample embedding:")
+    print(f"  Domain: {embeddings[0].domain}")
+    print(f"  Description: {embeddings[0].text_description[:100]}...")
+    print(f"  Embedding dims: {len(embeddings[0].embedding)}")
+
+
+async def cmd_similar(args, structure_store: StructureStore):
+    """Find structures similar to a domain."""
+    print(f"Finding structures similar to {args.domain}...")
+
+    structures, _ = await get_all_structures(structure_store)
+
+    if not structures:
+        print("No structures found in Redis.")
+        return
+
+    # Find the query structure
+    query_structure = None
+    for s in structures:
+        if s.domain == args.domain:
+            query_structure = s
+            break
+
+    if query_structure is None:
+        print(f"Structure for {args.domain} not found.")
+        return
+
+    model = StructureEmbeddingModel(model_name=args.model)
+
+    # Create all embeddings
+    print("Creating embeddings...")
+    embeddings = model.embed_structures_batch(structures)
+
+    # Find query embedding
+    query_embedding = None
+    for e in embeddings:
+        if e.domain == args.domain:
+            query_embedding = e
+            break
+
+    # Find similar
+    results = model.find_similar(
+        query_embedding.embedding,
+        [e for e in embeddings if e.domain != args.domain],
+        top_k=args.top_k,
+    )
+
+    print(f"\nTop {args.top_k} similar structures to {args.domain}:")
+    print("=" * 60)
+    for emb, score in results:
+        print(f"\n  {emb.domain} [{emb.page_type}]")
+        print(f"  Similarity: {score:.2%}")
+        print(f"  Description: {emb.text_description[:80]}...")
+
+
+async def cmd_train_classifier(args, structure_store: StructureStore):
+    """Train a page type classifier."""
+    print("Training page type classifier...")
+
+    structures, _ = await get_all_structures(structure_store)
+
+    if len(structures) < 5:
+        print("Need at least 5 structures to train a classifier.")
+        return
+
+    # Use page_type as labels
+    labels = [s.page_type for s in structures]
+
+    # Check we have multiple classes
+    unique_labels = set(labels)
+    if len(unique_labels) < 2:
+        print(f"Need at least 2 different page types. Found: {unique_labels}")
+        return
+
+    model = StructureEmbeddingModel(model_name=args.model)
+    classifier = StructureClassifier(model)
+
+    print(f"Training on {len(structures)} structures...")
+    print(f"Page types: {unique_labels}")
+
+    metrics = classifier.train(structures, labels)
+
+    print("\nTraining Results:")
+    print(f"  Accuracy: {metrics['accuracy']:.2%} (+/- {metrics['std']:.2%})")
+    print(f"  Samples: {metrics['num_samples']}")
+    print(f"  Classes: {metrics['num_classes']}")
+
+    # Save classifier
+    output = args.output or "classifier.pkl"
+    classifier.save(output)
+    print(f"\nClassifier saved to: {output}")
+
+
+async def cmd_predict(args, structure_store: StructureStore):
+    """Predict page type for a domain."""
+    if not args.classifier:
+        print("Specify --classifier path to load trained model.")
+        return
+
+    structure = await structure_store.get_structure(args.domain, args.page_type or "homepage")
+    if structure is None:
+        # Try to find any page type
+        domains = await structure_store.list_domains()
+        for d, pt in domains:
+            if d == args.domain:
+                structure = await structure_store.get_structure(d, pt)
+                break
+
+    if structure is None:
+        print(f"No structure found for {args.domain}")
+        return
+
+    model = StructureEmbeddingModel(model_name=args.model)
+    classifier = StructureClassifier(model)
+    classifier.load(args.classifier)
+
+    label, confidence = classifier.predict(structure)
+
+    print(f"\nPrediction for {structure.domain}:")
+    print(f"  Actual page type: {structure.page_type}")
+    print(f"  Predicted: {label}")
+    print(f"  Confidence: {confidence:.2%}")
+
+
+async def cmd_similarity_pairs(args, structure_store: StructureStore):
+    """Create similarity pairs for contrastive learning."""
+    print("Creating similarity pairs for fine-tuning...")
+
+    structures, _ = await get_all_structures(structure_store)
+
+    if len(structures) < 2:
+        print("Need at least 2 structures.")
+        return
+
+    pairs = create_similarity_pairs(structures)
+
+    output = args.output or "similarity_pairs.jsonl"
+    with open(output, "w") as f:
+        for pair in pairs:
+            f.write(json.dumps(pair) + "\n")
+
+    print(f"Created {len(pairs)} similarity pairs.")
+    print(f"Saved to: {output}")
+
+    # Show sample
+    if pairs:
+        print("\nSample pair:")
+        print(f"  Text 1: {pairs[0]['sentence1'][:60]}...")
+        print(f"  Text 2: {pairs[0]['sentence2'][:60]}...")
+        print(f"  Score: {pairs[0]['score']}")
+
+
+async def main():
+    parser = argparse.ArgumentParser(
+        description="Train and use ML embeddings with crawled structures",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    parser.add_argument(
+        "--model",
+        default="all-MiniLM-L6-v2",
+        help="Sentence transformer model (default: all-MiniLM-L6-v2)",
+    )
+    parser.add_argument(
+        "--redis-url",
+        default=None,
+        help="Redis URL (default: from config)",
+    )
+    parser.add_argument(
+        "--output", "-o",
+        help="Output file path",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+
+    # Export command
+    export_parser = subparsers.add_parser("export", help="Export training data")
+    export_parser.add_argument("--output", "-o", default="training_data.jsonl")
+
+    # Embed command
+    embed_parser = subparsers.add_parser("embed", help="Create embeddings")
+    embed_parser.add_argument("--output", "-o", default="embeddings.json")
+
+    # Similar command
+    similar_parser = subparsers.add_parser("similar", help="Find similar structures")
+    similar_parser.add_argument("domain", help="Domain to find similar to")
+    similar_parser.add_argument("--top-k", type=int, default=5)
+
+    # Train classifier command
+    train_parser = subparsers.add_parser("train", help="Train classifier")
+    train_parser.add_argument("--output", "-o", default="classifier.pkl")
+
+    # Predict command
+    predict_parser = subparsers.add_parser("predict", help="Predict page type")
+    predict_parser.add_argument("domain", help="Domain to predict")
+    predict_parser.add_argument("--page-type", default=None)
+    predict_parser.add_argument("--classifier", default="classifier.pkl")
+
+    # Similarity pairs command
+    pairs_parser = subparsers.add_parser("pairs", help="Create similarity pairs")
+    pairs_parser.add_argument("--output", "-o", default="similarity_pairs.jsonl")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return
+
+    # Connect to Redis
+    try:
+        config = load_config()
+        redis_url = args.redis_url or config.redis_url
+    except Exception:
+        redis_url = args.redis_url or "redis://localhost:6379/0"
+
+    client = redis.from_url(redis_url, decode_responses=False)
+    structure_store = StructureStore(client)
+
+    try:
+        if args.command == "export":
+            await cmd_export(args, structure_store)
+        elif args.command == "embed":
+            await cmd_embed(args, structure_store)
+        elif args.command == "similar":
+            await cmd_similar(args, structure_store)
+        elif args.command == "train":
+            await cmd_train_classifier(args, structure_store)
+        elif args.command == "predict":
+            await cmd_predict(args, structure_store)
+        elif args.command == "pairs":
+            await cmd_similarity_pairs(args, structure_store)
+    finally:
+        await client.aclose()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

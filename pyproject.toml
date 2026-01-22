@@ -92,6 +92,11 @@ alerting = [
     "sendgrid>=6.11.0,<7.0",
 ]
 
+ml = [
+    # ML training and classification
+    "scikit-learn>=1.4.0,<2.0",
+]
+
 [project.scripts]
 crawler = "crawler.__main__:main"
 
