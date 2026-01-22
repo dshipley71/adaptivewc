@@ -6,26 +6,40 @@ This script demonstrates how to:
 1. Export structure data for ML training
 2. Create embeddings using sentence-transformers
 3. Find similar page structures
-4. Train a page type classifier
+4. Train a page type classifier (LogisticRegression, XGBoost, or LightGBM)
+5. Detect changes using ML-based change detection
+6. Generate descriptions using rules or LLM
 
 Usage:
     # Export training data from Redis
-    python scripts/train_embeddings.py --export training_data.jsonl
+    python scripts/train_embeddings.py export -o training_data.jsonl
 
     # Create embeddings for all structures
-    python scripts/train_embeddings.py --embed
+    python scripts/train_embeddings.py embed
 
     # Find similar structures to a domain
-    python scripts/train_embeddings.py --similar example.com
+    python scripts/train_embeddings.py similar example.com
 
-    # Train a page type classifier
-    python scripts/train_embeddings.py --train-classifier
+    # Train a page type classifier (supports --classifier-type)
+    python scripts/train_embeddings.py train --classifier-type xgboost
 
     # Predict page type for a new structure
-    python scripts/train_embeddings.py --predict example.com
+    python scripts/train_embeddings.py predict example.com --classifier classifier.pkl
+
+    # Set baseline and detect changes
+    python scripts/train_embeddings.py set-baseline example.com
+    python scripts/train_embeddings.py detect-change example.com
+
+    # Generate descriptions with rules or LLM
+    python scripts/train_embeddings.py describe example.com --mode rules
+    python scripts/train_embeddings.py describe example.com --mode llm --provider openai
 
 Requirements:
     pip install sentence-transformers scikit-learn
+
+    For XGBoost:    pip install xgboost
+    For LightGBM:   pip install lightgbm  (already in main deps)
+    For LLM mode:   pip install openai anthropic
 """
 
 import argparse
@@ -43,9 +57,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from crawler.config import load_config
 from crawler.storage.structure_store import StructureStore
 from crawler.ml.embeddings import (
+    ClassifierType,
+    DescriptionMode,
     StructureEmbeddingModel,
     StructureClassifier,
     StructureDescriptionGenerator,
+    MLChangeDetector,
+    get_description_generator,
     export_training_data,
     create_similarity_pairs,
 )
@@ -179,7 +197,8 @@ async def cmd_similar(args, structure_store: StructureStore):
 
 async def cmd_train_classifier(args, structure_store: StructureStore):
     """Train a page type classifier."""
-    print("Training page type classifier...")
+    classifier_type = ClassifierType(args.classifier_type)
+    print(f"Training page type classifier using {classifier_type.value}...")
 
     structures, _ = await get_all_structures(structure_store)
 
@@ -197,7 +216,7 @@ async def cmd_train_classifier(args, structure_store: StructureStore):
         return
 
     model = StructureEmbeddingModel(model_name=args.model)
-    classifier = StructureClassifier(model)
+    classifier = StructureClassifier(model, classifier_type=classifier_type)
 
     print(f"Training on {len(structures)} structures...")
     print(f"Page types: {unique_labels}")
@@ -205,9 +224,18 @@ async def cmd_train_classifier(args, structure_store: StructureStore):
     metrics = classifier.train(structures, labels)
 
     print("\nTraining Results:")
+    print(f"  Classifier: {metrics.get('classifier_type', 'logistic_regression')}")
     print(f"  Accuracy: {metrics['accuracy']:.2%} (+/- {metrics['std']:.2%})")
     print(f"  Samples: {metrics['num_samples']}")
     print(f"  Classes: {metrics['num_classes']}")
+
+    # Feature importance for tree-based classifiers
+    importance = classifier.get_feature_importance()
+    if importance:
+        sorted_imp = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:10]
+        print("\nTop 10 Feature Importance:")
+        for feat, imp in sorted_imp:
+            print(f"  {feat}: {imp:.4f}")
 
     # Save classifier
     output = args.output or "classifier.pkl"
@@ -274,6 +302,136 @@ async def cmd_similarity_pairs(args, structure_store: StructureStore):
         print(f"  Score: {pairs[0]['score']}")
 
 
+async def cmd_describe(args, structure_store: StructureStore):
+    """Generate description of a structure."""
+    structure = await structure_store.get_structure(args.domain, args.page_type or "homepage")
+    if structure is None:
+        # Try to find any page type
+        domains = await structure_store.list_domains()
+        for d, pt in domains:
+            if d == args.domain:
+                structure = await structure_store.get_structure(d, pt)
+                break
+
+    if structure is None:
+        print(f"No structure found for {args.domain}")
+        return
+
+    mode = DescriptionMode(args.mode)
+    print(f"Generating description using {mode.value} mode...")
+
+    if mode == DescriptionMode.LLM:
+        generator = get_description_generator(
+            mode,
+            provider=args.provider,
+            model=args.llm_model,
+        )
+    else:
+        generator = get_description_generator(mode)
+
+    description = generator.generate(structure)
+
+    print(f"\nStructure for {structure.domain} [{structure.page_type}]:")
+    print("=" * 60)
+    print(description)
+
+
+async def cmd_set_baseline(args, structure_store: StructureStore, detector: MLChangeDetector):
+    """Set baseline for a domain."""
+    structure = await structure_store.get_structure(args.domain, args.page_type or "homepage")
+    if structure is None:
+        # Try to find any page type
+        domains = await structure_store.list_domains()
+        for d, pt in domains:
+            if d == args.domain:
+                structure = await structure_store.get_structure(d, pt)
+                break
+
+    if structure is None:
+        print(f"No structure found for {args.domain}")
+        return
+
+    detector.set_site_baseline(structure.domain, structure)
+
+    # Save detector state
+    output = args.detector_state or "detector_state.pkl"
+    detector.save(output)
+
+    print(f"Baseline set for {structure.domain} [{structure.page_type}]")
+    print(f"Detector state saved to: {output}")
+
+
+async def cmd_detect_drift(args, structure_store: StructureStore, detector: MLChangeDetector):
+    """Detect drift from baseline for a domain."""
+    structure = await structure_store.get_structure(args.domain, args.page_type or "homepage")
+    if structure is None:
+        # Try to find any page type
+        domains = await structure_store.list_domains()
+        for d, pt in domains:
+            if d == args.domain:
+                structure = await structure_store.get_structure(d, pt)
+                break
+
+    if structure is None:
+        print(f"No structure found for {args.domain}")
+        return
+
+    result = detector.detect_drift_from_baseline(structure)
+
+    if result is None:
+        print(f"No baseline found for {structure.domain}. Run set-baseline first.")
+        return
+
+    print(f"\nDrift Analysis for {structure.domain}:")
+    print("=" * 60)
+    print(f"  Similarity to baseline: {result['similarity_to_baseline']:.2%}")
+    print(f"  Is drifted: {result['is_drifted']}")
+    print(f"  Baseline created: {result['baseline_created']}")
+
+
+async def cmd_compare(args, structure_store: StructureStore, detector: MLChangeDetector):
+    """Compare two structures using ML change detection."""
+    # Get both structures
+    old_structure = await structure_store.get_structure(args.domain1, args.page_type or "homepage")
+    new_structure = await structure_store.get_structure(args.domain2, args.page_type or "homepage")
+
+    # Try to find structures if not found
+    if old_structure is None:
+        domains = await structure_store.list_domains()
+        for d, pt in domains:
+            if d == args.domain1:
+                old_structure = await structure_store.get_structure(d, pt)
+                break
+
+    if new_structure is None:
+        domains = await structure_store.list_domains()
+        for d, pt in domains:
+            if d == args.domain2:
+                new_structure = await structure_store.get_structure(d, pt)
+                break
+
+    if old_structure is None:
+        print(f"No structure found for {args.domain1}")
+        return
+
+    if new_structure is None:
+        print(f"No structure found for {args.domain2}")
+        return
+
+    result = detector.detect_change(old_structure, new_structure)
+
+    print(f"\nChange Detection: {args.domain1} -> {args.domain2}")
+    print("=" * 60)
+    print(f"  Embedding similarity: {result['similarity']:.2%}")
+    print(f"  Is breaking change: {result['is_breaking']}")
+
+    if 'predicted_impact' in result:
+        print(f"  Predicted impact: {result['predicted_impact']} ({result['impact_confidence']:.2%} confidence)")
+
+    print("\nChange Description:")
+    print(result['change_description'])
+
+
 async def main():
     parser = argparse.ArgumentParser(
         description="Train and use ML embeddings with crawled structures",
@@ -313,6 +471,12 @@ async def main():
     # Train classifier command
     train_parser = subparsers.add_parser("train", help="Train classifier")
     train_parser.add_argument("--output", "-o", default="classifier.pkl")
+    train_parser.add_argument(
+        "--classifier-type",
+        choices=["logistic_regression", "xgboost", "lightgbm"],
+        default="logistic_regression",
+        help="Classifier type (default: logistic_regression)",
+    )
 
     # Predict command
     predict_parser = subparsers.add_parser("predict", help="Predict page type")
@@ -323,6 +487,58 @@ async def main():
     # Similarity pairs command
     pairs_parser = subparsers.add_parser("pairs", help="Create similarity pairs")
     pairs_parser.add_argument("--output", "-o", default="similarity_pairs.jsonl")
+
+    # Describe command (rules vs LLM)
+    describe_parser = subparsers.add_parser("describe", help="Generate structure description")
+    describe_parser.add_argument("domain", help="Domain to describe")
+    describe_parser.add_argument("--page-type", default=None)
+    describe_parser.add_argument(
+        "--mode",
+        choices=["rules", "llm"],
+        default="rules",
+        help="Description mode (default: rules)",
+    )
+    describe_parser.add_argument(
+        "--provider",
+        choices=["openai", "anthropic"],
+        default="openai",
+        help="LLM provider for llm mode (default: openai)",
+    )
+    describe_parser.add_argument(
+        "--llm-model",
+        default=None,
+        help="LLM model name (default: gpt-4o-mini or claude-3-haiku)",
+    )
+
+    # Set baseline command
+    baseline_parser = subparsers.add_parser("set-baseline", help="Set baseline for change detection")
+    baseline_parser.add_argument("domain", help="Domain to set as baseline")
+    baseline_parser.add_argument("--page-type", default=None)
+    baseline_parser.add_argument("--detector-state", default="detector_state.pkl")
+
+    # Detect drift command
+    drift_parser = subparsers.add_parser("detect-drift", help="Detect drift from baseline")
+    drift_parser.add_argument("domain", help="Domain to check for drift")
+    drift_parser.add_argument("--page-type", default=None)
+    drift_parser.add_argument("--detector-state", default="detector_state.pkl")
+
+    # Compare command
+    compare_parser = subparsers.add_parser("compare", help="Compare two structures")
+    compare_parser.add_argument("domain1", help="First domain")
+    compare_parser.add_argument("domain2", help="Second domain")
+    compare_parser.add_argument("--page-type", default=None)
+    compare_parser.add_argument(
+        "--mode",
+        choices=["rules", "llm"],
+        default="rules",
+        help="Description mode for change report (default: rules)",
+    )
+    compare_parser.add_argument(
+        "--provider",
+        choices=["openai", "anthropic"],
+        default="openai",
+        help="LLM provider for llm mode (default: openai)",
+    )
 
     args = parser.parse_args()
 
@@ -340,6 +556,35 @@ async def main():
     client = redis.from_url(redis_url, decode_responses=False)
     structure_store = StructureStore(client)
 
+    # Create ML change detector for relevant commands
+    detector = None
+    if args.command in ("set-baseline", "detect-drift", "compare"):
+        model = StructureEmbeddingModel(model_name=args.model)
+
+        # Get description mode if available
+        mode = getattr(args, "mode", "rules")
+        if mode == "llm":
+            desc_gen = get_description_generator(
+                DescriptionMode.LLM,
+                provider=getattr(args, "provider", "openai"),
+            )
+        else:
+            desc_gen = get_description_generator(DescriptionMode.RULES)
+
+        detector = MLChangeDetector(
+            embedding_model=model,
+            description_generator=desc_gen,
+        )
+
+        # Load existing state if available
+        if args.command in ("detect-drift", "compare"):
+            state_path = getattr(args, "detector_state", "detector_state.pkl")
+            try:
+                detector.load(state_path)
+                print(f"Loaded detector state from {state_path}")
+            except FileNotFoundError:
+                pass
+
     try:
         if args.command == "export":
             await cmd_export(args, structure_store)
@@ -353,6 +598,14 @@ async def main():
             await cmd_predict(args, structure_store)
         elif args.command == "pairs":
             await cmd_similarity_pairs(args, structure_store)
+        elif args.command == "describe":
+            await cmd_describe(args, structure_store)
+        elif args.command == "set-baseline":
+            await cmd_set_baseline(args, structure_store, detector)
+        elif args.command == "detect-drift":
+            await cmd_detect_drift(args, structure_store, detector)
+        elif args.command == "compare":
+            await cmd_compare(args, structure_store, detector)
     finally:
         await client.aclose()
 

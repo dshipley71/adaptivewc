@@ -3,17 +3,42 @@ ML embeddings integration for adaptive web crawler.
 
 Uses sentence transformers (like all-MiniLM-L6-v2) to create embeddings
 of page structures for similarity search, clustering, and classification.
+
+Supports multiple classifier backends:
+- LogisticRegression (default, fast)
+- XGBoost (gradient boosting, good for tabular features)
+- LightGBM (fast gradient boosting, handles large datasets)
+
+Supports multiple description generators:
+- Rules-based (default, deterministic)
+- LLM-based (uses OpenAI/Anthropic for richer descriptions)
 """
 
 import json
+import os
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
 from crawler.models import PageStructure, ExtractionStrategy
+
+
+class ClassifierType(str, Enum):
+    """Supported classifier types."""
+    LOGISTIC_REGRESSION = "logistic_regression"
+    XGBOOST = "xgboost"
+    LIGHTGBM = "lightgbm"
+
+
+class DescriptionMode(str, Enum):
+    """Description generation modes."""
+    RULES = "rules"  # Rules-based (deterministic)
+    LLM = "llm"  # LLM-based (requires API key)
 
 
 @dataclass
@@ -236,6 +261,250 @@ class StrategyDescriptionGenerator:
         return " ".join(lines)
 
 
+class BaseDescriptionGenerator(ABC):
+    """Abstract base class for description generators."""
+
+    @abstractmethod
+    def generate(self, structure: PageStructure) -> str:
+        """Generate a text description of a page structure."""
+        pass
+
+    @abstractmethod
+    def generate_for_change_detection(
+        self,
+        old_structure: PageStructure,
+        new_structure: PageStructure,
+    ) -> str:
+        """Generate description focused on detecting changes."""
+        pass
+
+
+class RulesBasedDescriptionGenerator(BaseDescriptionGenerator):
+    """
+    Rules-based description generator (deterministic).
+
+    Uses handcrafted rules to generate consistent, structured descriptions.
+    Fast, no external dependencies, deterministic output.
+    """
+
+    def generate(self, structure: PageStructure) -> str:
+        """Generate description using rules."""
+        return StructureDescriptionGenerator.generate(structure)
+
+    def generate_for_change_detection(
+        self,
+        old_structure: PageStructure,
+        new_structure: PageStructure,
+    ) -> str:
+        """Generate change-focused description."""
+        lines = []
+        lines.append("BEFORE:")
+        lines.append(self.generate(old_structure))
+        lines.append("AFTER:")
+        lines.append(self.generate(new_structure))
+        return "\n".join(lines)
+
+
+class LLMDescriptionGenerator(BaseDescriptionGenerator):
+    """
+    LLM-based description generator.
+
+    Uses an LLM (OpenAI or Anthropic) to generate rich, semantic descriptions
+    that capture nuances rules might miss.
+
+    Requires API key:
+    - OPENAI_API_KEY for OpenAI models
+    - ANTHROPIC_API_KEY for Claude models
+    """
+
+    def __init__(
+        self,
+        provider: Literal["openai", "anthropic"] = "openai",
+        model: str | None = None,
+    ):
+        """
+        Initialize LLM description generator.
+
+        Args:
+            provider: "openai" or "anthropic"
+            model: Model name (defaults to gpt-4o-mini or claude-3-haiku)
+        """
+        self.provider = provider
+        self.model = model or (
+            "gpt-4o-mini" if provider == "openai" else "claude-3-haiku-20240307"
+        )
+        self._client = None
+
+    def _get_client(self):
+        """Lazy initialize the API client."""
+        if self._client is not None:
+            return self._client
+
+        if self.provider == "openai":
+            try:
+                from openai import OpenAI
+                api_key = os.environ.get("OPENAI_API_KEY")
+                if not api_key:
+                    raise ValueError("OPENAI_API_KEY environment variable required")
+                self._client = OpenAI(api_key=api_key)
+            except ImportError:
+                raise ImportError("openai package required: pip install openai")
+
+        elif self.provider == "anthropic":
+            try:
+                import anthropic
+                api_key = os.environ.get("ANTHROPIC_API_KEY")
+                if not api_key:
+                    raise ValueError("ANTHROPIC_API_KEY environment variable required")
+                self._client = anthropic.Anthropic(api_key=api_key)
+            except ImportError:
+                raise ImportError("anthropic package required: pip install anthropic")
+
+        return self._client
+
+    def _structure_to_json(self, structure: PageStructure) -> str:
+        """Convert structure to JSON for LLM context."""
+        data = {
+            "domain": structure.domain,
+            "page_type": structure.page_type,
+            "tag_hierarchy": structure.tag_hierarchy,
+            "content_regions": [
+                {"name": r.name, "selector": r.selector}
+                for r in (structure.content_regions or [])
+            ],
+            "navigation_count": len(structure.navigation_selectors or []),
+            "semantic_landmarks": structure.semantic_landmarks,
+            "has_pagination": bool(structure.pagination_pattern),
+            "css_class_count": len(structure.css_class_map or {}),
+            "script_frameworks": self._detect_frameworks(structure),
+        }
+        return json.dumps(data, indent=2)
+
+    def _detect_frameworks(self, structure: PageStructure) -> list[str]:
+        """Detect JavaScript frameworks from script signatures."""
+        if not structure.script_signatures:
+            return []
+        scripts = " ".join(structure.script_signatures).lower()
+        frameworks = []
+        for fw in ["react", "vue", "angular", "jquery", "next", "nuxt", "svelte"]:
+            if fw in scripts:
+                frameworks.append(fw)
+        return frameworks
+
+    def generate(self, structure: PageStructure) -> str:
+        """Generate description using LLM."""
+        client = self._get_client()
+        structure_json = self._structure_to_json(structure)
+
+        prompt = f"""Analyze this webpage structure and generate a concise semantic description
+suitable for ML embedding. Focus on:
+- Page type and purpose
+- Content organization and layout
+- Navigation complexity
+- Technical characteristics (frameworks, dynamic content)
+
+Structure:
+{structure_json}
+
+Generate a 2-3 sentence description that captures the essence of this page structure."""
+
+        if self.provider == "openai":
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+                temperature=0.3,
+            )
+            return response.choices[0].message.content.strip()
+
+        else:  # anthropic
+            response = client.messages.create(
+                model=self.model,
+                max_tokens=200,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text.strip()
+
+    def generate_for_change_detection(
+        self,
+        old_structure: PageStructure,
+        new_structure: PageStructure,
+    ) -> str:
+        """Generate change-focused description using LLM."""
+        client = self._get_client()
+
+        old_json = self._structure_to_json(old_structure)
+        new_json = self._structure_to_json(new_structure)
+
+        prompt = f"""Compare these two webpage structures and describe the changes.
+Focus on structural differences that would affect web scraping/extraction:
+- DOM structure changes
+- Navigation changes
+- Content region changes
+- CSS class changes
+- Framework changes
+
+BEFORE:
+{old_json}
+
+AFTER:
+{new_json}
+
+Generate a 2-3 sentence description of the key changes and their potential impact on extraction."""
+
+        if self.provider == "openai":
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=300,
+                temperature=0.3,
+            )
+            return response.choices[0].message.content.strip()
+
+        else:  # anthropic
+            response = client.messages.create(
+                model=self.model,
+                max_tokens=300,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text.strip()
+
+
+def get_description_generator(
+    mode: DescriptionMode | str = DescriptionMode.RULES,
+    **kwargs,
+) -> BaseDescriptionGenerator:
+    """
+    Factory function to get the appropriate description generator.
+
+    Args:
+        mode: "rules" for deterministic, "llm" for LLM-based
+        **kwargs: Additional arguments for LLM generator (provider, model)
+
+    Returns:
+        BaseDescriptionGenerator instance
+
+    Examples:
+        # Rules-based (default)
+        gen = get_description_generator("rules")
+
+        # LLM-based with OpenAI
+        gen = get_description_generator("llm", provider="openai")
+
+        # LLM-based with Anthropic
+        gen = get_description_generator("llm", provider="anthropic", model="claude-3-sonnet-20240229")
+    """
+    if isinstance(mode, str):
+        mode = DescriptionMode(mode)
+
+    if mode == DescriptionMode.RULES:
+        return RulesBasedDescriptionGenerator()
+    elif mode == DescriptionMode.LLM:
+        return LLMDescriptionGenerator(**kwargs)
+    else:
+        raise ValueError(f"Unknown description mode: {mode}")
+
+
 class StructureEmbeddingModel:
     """
     Creates embeddings of page structures using sentence transformers.
@@ -391,12 +660,79 @@ class StructureClassifier:
     - Content quality
     - Extraction difficulty
     - Similar known sites
+
+    Supports multiple classifier backends:
+    - LogisticRegression (default, fast, interpretable)
+    - XGBoost (gradient boosting, handles non-linear patterns)
+    - LightGBM (fast gradient boosting, good for large datasets)
     """
 
-    def __init__(self, embedding_model: StructureEmbeddingModel | None = None):
+    def __init__(
+        self,
+        embedding_model: StructureEmbeddingModel | None = None,
+        classifier_type: ClassifierType | str = ClassifierType.LOGISTIC_REGRESSION,
+    ):
+        """
+        Initialize the classifier.
+
+        Args:
+            embedding_model: Embedding model to use.
+            classifier_type: Type of classifier backend:
+                - "logistic_regression" (default)
+                - "xgboost"
+                - "lightgbm"
+        """
         self.embedding_model = embedding_model or StructureEmbeddingModel()
+        if isinstance(classifier_type, str):
+            classifier_type = ClassifierType(classifier_type)
+        self.classifier_type = classifier_type
         self._classifier = None
         self._label_encoder = None
+
+    def _create_classifier(self):
+        """Create the appropriate classifier based on type."""
+        if self.classifier_type == ClassifierType.LOGISTIC_REGRESSION:
+            try:
+                from sklearn.linear_model import LogisticRegression
+                return LogisticRegression(max_iter=1000)
+            except ImportError:
+                raise ImportError(
+                    "scikit-learn required. Install with: pip install scikit-learn"
+                )
+
+        elif self.classifier_type == ClassifierType.XGBOOST:
+            try:
+                from xgboost import XGBClassifier
+                return XGBClassifier(
+                    n_estimators=100,
+                    max_depth=6,
+                    learning_rate=0.1,
+                    objective="multi:softprob",
+                    eval_metric="mlogloss",
+                    use_label_encoder=False,
+                )
+            except ImportError:
+                raise ImportError(
+                    "XGBoost required. Install with: pip install xgboost"
+                )
+
+        elif self.classifier_type == ClassifierType.LIGHTGBM:
+            try:
+                from lightgbm import LGBMClassifier
+                return LGBMClassifier(
+                    n_estimators=100,
+                    max_depth=6,
+                    learning_rate=0.1,
+                    objective="multiclass",
+                    verbose=-1,
+                )
+            except ImportError:
+                raise ImportError(
+                    "LightGBM required. Install with: pip install lightgbm"
+                )
+
+        else:
+            raise ValueError(f"Unknown classifier type: {self.classifier_type}")
 
     def train(
         self,
@@ -414,7 +750,6 @@ class StructureClassifier:
             Training metrics.
         """
         try:
-            from sklearn.linear_model import LogisticRegression
             from sklearn.preprocessing import LabelEncoder
             from sklearn.model_selection import cross_val_score
         except ImportError:
@@ -430,18 +765,26 @@ class StructureClassifier:
         self._label_encoder = LabelEncoder()
         y = self._label_encoder.fit_transform(labels)
 
-        # Train classifier
-        self._classifier = LogisticRegression(max_iter=1000)
+        # Create and train classifier
+        self._classifier = self._create_classifier()
         self._classifier.fit(X, y)
 
         # Cross-validation score
-        scores = cross_val_score(self._classifier, X, y, cv=min(5, len(labels)))
+        cv_folds = min(5, len(set(labels)))
+        if cv_folds >= 2:
+            scores = cross_val_score(self._classifier, X, y, cv=cv_folds)
+            accuracy = float(scores.mean())
+            std = float(scores.std())
+        else:
+            accuracy = 0.0
+            std = 0.0
 
         return {
-            "accuracy": float(scores.mean()),
-            "std": float(scores.std()),
+            "accuracy": accuracy,
+            "std": std,
             "num_samples": len(structures),
             "num_classes": len(set(labels)),
+            "classifier_type": self.classifier_type.value,
         }
 
     def predict(self, structure: PageStructure) -> tuple[str, float]:
@@ -466,6 +809,52 @@ class StructureClassifier:
 
         return label, confidence
 
+    def predict_batch(
+        self,
+        structures: list[PageStructure],
+    ) -> list[tuple[str, float]]:
+        """
+        Predict labels for multiple structures.
+
+        Args:
+            structures: List of structures to classify.
+
+        Returns:
+            List of (predicted_label, confidence) tuples.
+        """
+        if self._classifier is None:
+            raise ValueError("Classifier not trained. Call train() first.")
+
+        embeddings = self.embedding_model.embed_structures_batch(structures)
+        X = np.array([e.embedding for e in embeddings])
+
+        pred_indices = self._classifier.predict(X)
+        probas = self._classifier.predict_proba(X)
+
+        results = []
+        for pred_idx, proba in zip(pred_indices, probas):
+            label = self._label_encoder.inverse_transform([pred_idx])[0]
+            confidence = float(proba[pred_idx])
+            results.append((label, confidence))
+
+        return results
+
+    def get_feature_importance(self) -> dict[str, float] | None:
+        """
+        Get feature importance (for XGBoost/LightGBM).
+
+        Returns:
+            Dictionary mapping feature index to importance, or None if not available.
+        """
+        if self._classifier is None:
+            return None
+
+        if hasattr(self._classifier, "feature_importances_"):
+            importances = self._classifier.feature_importances_
+            return {f"dim_{i}": float(imp) for i, imp in enumerate(importances)}
+
+        return None
+
     def save(self, path: str) -> None:
         """Save the trained classifier."""
         import pickle
@@ -474,6 +863,7 @@ class StructureClassifier:
                 "classifier": self._classifier,
                 "label_encoder": self._label_encoder,
                 "model_name": self.embedding_model.model_name,
+                "classifier_type": self.classifier_type.value,
             }, f)
 
     def load(self, path: str) -> None:
@@ -483,6 +873,293 @@ class StructureClassifier:
             data = pickle.load(f)
             self._classifier = data["classifier"]
             self._label_encoder = data["label_encoder"]
+            if "classifier_type" in data:
+                self.classifier_type = ClassifierType(data["classifier_type"])
+
+
+class MLChangeDetector:
+    """
+    ML-based change detection using embeddings.
+
+    Uses embedding similarity to detect structural changes between page versions.
+    Can be trained on site-specific data to learn what constitutes a breaking change.
+
+    This complements the rules-based ChangeDetector in crawler/adaptive/change_detector.py
+    by using learned representations instead of hand-crafted similarity metrics.
+    """
+
+    def __init__(
+        self,
+        embedding_model: StructureEmbeddingModel | None = None,
+        description_generator: BaseDescriptionGenerator | None = None,
+        breaking_threshold: float = 0.85,
+        classifier_type: ClassifierType | str = ClassifierType.LOGISTIC_REGRESSION,
+    ):
+        """
+        Initialize the ML change detector.
+
+        Args:
+            embedding_model: Model for creating embeddings.
+            description_generator: Generator for text descriptions.
+            breaking_threshold: Similarity below this indicates breaking changes.
+            classifier_type: Classifier type for training change prediction.
+        """
+        self.embedding_model = embedding_model or StructureEmbeddingModel()
+        self.description_generator = description_generator or RulesBasedDescriptionGenerator()
+        self.breaking_threshold = breaking_threshold
+        self.classifier_type = (
+            ClassifierType(classifier_type)
+            if isinstance(classifier_type, str)
+            else classifier_type
+        )
+        self._change_classifier = None
+        self._site_baselines: dict[str, StructureEmbedding] = {}
+
+    def compute_similarity(
+        self,
+        old_structure: PageStructure,
+        new_structure: PageStructure,
+    ) -> float:
+        """
+        Compute embedding similarity between two structures.
+
+        Args:
+            old_structure: Previous structure.
+            new_structure: Current structure.
+
+        Returns:
+            Similarity score between 0 and 1.
+        """
+        old_emb = self.embedding_model.embed_structure(old_structure)
+        new_emb = self.embedding_model.embed_structure(new_structure)
+
+        return self.embedding_model.compute_similarity(
+            old_emb.embedding, new_emb.embedding
+        )
+
+    def detect_change(
+        self,
+        old_structure: PageStructure,
+        new_structure: PageStructure,
+    ) -> dict[str, Any]:
+        """
+        Detect changes between structures using embeddings.
+
+        Args:
+            old_structure: Previous structure.
+            new_structure: Current structure.
+
+        Returns:
+            Dictionary with change analysis:
+            - similarity: Embedding similarity score
+            - is_breaking: Whether change is breaking
+            - change_description: Text description of changes
+            - predicted_impact: If classifier is trained, predicted impact
+        """
+        # Compute embedding similarity
+        similarity = self.compute_similarity(old_structure, new_structure)
+
+        # Generate change description
+        change_desc = self.description_generator.generate_for_change_detection(
+            old_structure, new_structure
+        )
+
+        result = {
+            "similarity": similarity,
+            "is_breaking": similarity < self.breaking_threshold,
+            "change_description": change_desc,
+            "domain": new_structure.domain,
+            "page_type": new_structure.page_type,
+        }
+
+        # If classifier is trained, get predicted impact
+        if self._change_classifier is not None:
+            impact, confidence = self._predict_change_impact(
+                old_structure, new_structure
+            )
+            result["predicted_impact"] = impact
+            result["impact_confidence"] = confidence
+
+        return result
+
+    def set_site_baseline(
+        self,
+        domain: str,
+        structure: PageStructure,
+    ) -> None:
+        """
+        Set baseline structure for a specific site.
+
+        Future comparisons will be against this baseline.
+
+        Args:
+            domain: Site domain.
+            structure: Baseline structure.
+        """
+        embedding = self.embedding_model.embed_structure(structure)
+        key = f"{domain}:{structure.page_type}"
+        self._site_baselines[key] = embedding
+
+    def detect_drift_from_baseline(
+        self,
+        structure: PageStructure,
+    ) -> dict[str, Any] | None:
+        """
+        Detect drift from site baseline.
+
+        Args:
+            structure: Current structure to compare.
+
+        Returns:
+            Drift analysis or None if no baseline exists.
+        """
+        key = f"{structure.domain}:{structure.page_type}"
+        baseline = self._site_baselines.get(key)
+
+        if baseline is None:
+            return None
+
+        current_emb = self.embedding_model.embed_structure(structure)
+        similarity = self.embedding_model.compute_similarity(
+            baseline.embedding, current_emb.embedding
+        )
+
+        return {
+            "similarity_to_baseline": similarity,
+            "is_drifted": similarity < self.breaking_threshold,
+            "baseline_created": baseline.created_at.isoformat(),
+            "domain": structure.domain,
+            "page_type": structure.page_type,
+        }
+
+    def train_change_classifier(
+        self,
+        change_pairs: list[tuple[PageStructure, PageStructure]],
+        labels: list[str],  # e.g., "breaking", "minor", "cosmetic"
+    ) -> dict[str, float]:
+        """
+        Train a classifier to predict change impact.
+
+        Args:
+            change_pairs: List of (old_structure, new_structure) tuples.
+            labels: Impact labels for each pair.
+
+        Returns:
+            Training metrics.
+        """
+        try:
+            from sklearn.preprocessing import LabelEncoder
+            from sklearn.model_selection import cross_val_score
+        except ImportError:
+            raise ImportError(
+                "scikit-learn required. Install with: pip install scikit-learn"
+            )
+
+        # Create feature vectors from pairs
+        features = []
+        for old_struct, new_struct in change_pairs:
+            old_emb = self.embedding_model.embed_structure(old_struct)
+            new_emb = self.embedding_model.embed_structure(new_struct)
+
+            # Combine embeddings: [old, new, diff, similarity]
+            old_vec = np.array(old_emb.embedding)
+            new_vec = np.array(new_emb.embedding)
+            diff_vec = new_vec - old_vec
+            similarity = self.embedding_model.compute_similarity(
+                old_emb.embedding, new_emb.embedding
+            )
+
+            # Feature vector: concatenation + similarity
+            feature_vec = np.concatenate([
+                old_vec, new_vec, diff_vec, [similarity]
+            ])
+            features.append(feature_vec)
+
+        X = np.array(features)
+
+        # Create classifier
+        self._change_label_encoder = LabelEncoder()
+        y = self._change_label_encoder.fit_transform(labels)
+
+        classifier = StructureClassifier(
+            classifier_type=self.classifier_type
+        )
+        self._change_classifier = classifier._create_classifier()
+        self._change_classifier.fit(X, y)
+
+        # Cross-validation
+        cv_folds = min(5, len(set(labels)))
+        if cv_folds >= 2:
+            scores = cross_val_score(self._change_classifier, X, y, cv=cv_folds)
+            accuracy = float(scores.mean())
+            std = float(scores.std())
+        else:
+            accuracy = 0.0
+            std = 0.0
+
+        return {
+            "accuracy": accuracy,
+            "std": std,
+            "num_samples": len(change_pairs),
+            "num_classes": len(set(labels)),
+            "classifier_type": self.classifier_type.value,
+        }
+
+    def _predict_change_impact(
+        self,
+        old_structure: PageStructure,
+        new_structure: PageStructure,
+    ) -> tuple[str, float]:
+        """Predict change impact using trained classifier."""
+        old_emb = self.embedding_model.embed_structure(old_structure)
+        new_emb = self.embedding_model.embed_structure(new_structure)
+
+        old_vec = np.array(old_emb.embedding)
+        new_vec = np.array(new_emb.embedding)
+        diff_vec = new_vec - old_vec
+        similarity = self.embedding_model.compute_similarity(
+            old_emb.embedding, new_emb.embedding
+        )
+
+        feature_vec = np.concatenate([old_vec, new_vec, diff_vec, [similarity]])
+        X = feature_vec.reshape(1, -1)
+
+        pred_idx = self._change_classifier.predict(X)[0]
+        proba = self._change_classifier.predict_proba(X)[0]
+
+        label = self._change_label_encoder.inverse_transform([pred_idx])[0]
+        confidence = float(proba[pred_idx])
+
+        return label, confidence
+
+    def save(self, path: str) -> None:
+        """Save the change detector state."""
+        import pickle
+        with open(path, "wb") as f:
+            pickle.dump({
+                "classifier": self._change_classifier,
+                "label_encoder": getattr(self, "_change_label_encoder", None),
+                "baselines": {
+                    k: v.to_dict() for k, v in self._site_baselines.items()
+                },
+                "breaking_threshold": self.breaking_threshold,
+                "classifier_type": self.classifier_type.value,
+            }, f)
+
+    def load(self, path: str) -> None:
+        """Load change detector state."""
+        import pickle
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+            self._change_classifier = data.get("classifier")
+            self._change_label_encoder = data.get("label_encoder")
+            self._site_baselines = {
+                k: StructureEmbedding.from_dict(v)
+                for k, v in data.get("baselines", {}).items()
+            }
+            self.breaking_threshold = data.get("breaking_threshold", 0.85)
+            if "classifier_type" in data:
+                self.classifier_type = ClassifierType(data["classifier_type"])
 
 
 def export_training_data(
