@@ -4,7 +4,7 @@ Diagnostic script to inspect data in the Adaptive Web Crawler.
 Provides comprehensive inspection of URL frontier, robots.txt cache,
 page structures, and crawl statistics stored in Redis.
 
-Location: adaptivewc-main/scripts/inspect_index.py
+Location: adaptivewc/scripts/inspect_index.py
 
 Usage:
     python scripts/inspect_index.py                          # Show stats and list domains
@@ -26,6 +26,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import redis.asyncio as redis
 
@@ -36,7 +37,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from crawler.config import CrawlerSettings, load_config
 from crawler.storage.url_store import URLStore, URLEntry
 from crawler.storage.robots_cache import RobotsCache
-from crawler.storage.structure_store import StructureStore, StructureSignature
+from crawler.storage.structure_store import StructureStore
+from crawler.models import PageStructure, ExtractionStrategy
 
 
 class CrawlerInspector:
@@ -81,10 +83,9 @@ class CrawlerInspector:
         print("\n  Page Structure Store:")
         print(f"    Tracked Domains:     {structure_stats.get('tracked_domains', 0)}")
         print(f"    Tracked Page Types:  {structure_stats.get('tracked_page_types', 0)}")
-        print(f"    Total Saved:         {structure_stats.get('total_saved', 0)}")
+        print(f"    Total Structures:    {structure_stats.get('total_structures', 0)}")
+        print(f"    Total Strategies:    {structure_stats.get('total_strategies', 0)}")
         print(f"    TTL (seconds):       {structure_stats.get('ttl_seconds', 'N/A')}")
-        if structure_stats.get('last_save'):
-            print(f"    Last Save:           {structure_stats.get('last_save')}")
 
         # Per-domain queue sizes
         if stats.get('domains'):
@@ -111,7 +112,7 @@ class CrawlerInspector:
             domain_list.append(domain_str)
             queue_size = await self.url_store.get_queue_size(domain_str)
             seen_count = await self._get_seen_count(domain_str)
-            status = "✓" if queue_size > 0 else "○"
+            status = "+" if queue_size > 0 else "o"
             print(f"  {status} {domain_str}")
             print(f"      Queue: {queue_size:,} | Seen: {seen_count:,}")
 
@@ -144,12 +145,12 @@ class CrawlerInspector:
             depth_display = f"D{entry.depth}"
             retries_display = f"R{entry.retries}" if entry.retries > 0 else ""
 
-            print(f"  📄 {entry.url[:70]}{'...' if len(entry.url) > 70 else ''}")
+            print(f"  [URL] {entry.url[:70]}{'...' if len(entry.url) > 70 else ''}")
             print(f"      Priority: {priority_display} | Depth: {depth_display} {retries_display}")
             if entry.parent_url:
                 print(f"      Parent: {entry.parent_url[:50]}...")
             if entry.last_error:
-                print(f"      ⚠ Error: {entry.last_error}")
+                print(f"      ! Error: {entry.last_error}")
             print()
 
         total = await self.url_store.get_queue_size(domain)
@@ -168,10 +169,10 @@ class CrawlerInspector:
         print(f"{'='*60}\n")
 
         urls = []
-        for url in seen_urls:
+        for url in seen_urls or []:
             url_str = url.decode() if isinstance(url, bytes) else url
             urls.append(url_str)
-            print(f"  ✓ {url_str[:80]}{'...' if len(url_str) > 80 else ''}")
+            print(f"  + {url_str[:80]}{'...' if len(url_str) > 80 else ''}")
 
         total = await self._get_seen_count(domain)
         print(f"\n  Showing {len(urls)} of {total} seen URLs (random sample)")
@@ -187,11 +188,10 @@ class CrawlerInspector:
         print(f"{'='*60}\n")
 
         if robots is None:
-            print(f"  ❌ No cached robots.txt for {domain}")
+            print(f"  X No cached robots.txt for {domain}")
             return None
 
         print(f"  Fetch Status: {robots.fetch_status}")
-        print(f"  Parsed At: {robots.parsed_at}")
 
         if robots.sitemaps:
             print(f"\n  Sitemaps:")
@@ -254,7 +254,7 @@ class CrawlerInspector:
             else:
                 highlighted = url
 
-            print(f"  📄 {highlighted[:80]}")
+            print(f"  [URL] {highlighted[:80]}")
             print(f"      Domain: {domain} | Priority: {priority:.2f}")
             print()
 
@@ -274,27 +274,38 @@ class CrawlerInspector:
         robots_keys = await self.redis.keys(f"{RobotsCache.KEY_PREFIX}*")
         state["robots_cache"] = {}
         for key in robots_keys:
-            domain = key.decode().replace(RobotsCache.KEY_PREFIX, "") if isinstance(key, bytes) else key.replace(RobotsCache.KEY_PREFIX, "")
+            key_str = key.decode() if isinstance(key, bytes) else key
+            domain = key_str.replace(RobotsCache.KEY_PREFIX, "")
             robots = await self.robots_cache.get(domain)
             if robots:
                 state["robots_cache"][domain] = robots.to_dict()
+
+        # Add structures
+        state["structures"] = {}
+        domains = await self.structure_store.list_domains()
+        for domain, page_type in domains:
+            structure = await self.structure_store.get_structure(domain, page_type)
+            if structure:
+                key = f"{domain}:{page_type}"
+                state["structures"][key] = structure.to_dict()
 
         state["exported_at"] = datetime.utcnow().isoformat()
 
         with open(output_path, "w") as f:
             json.dump(state, f, indent=2, default=str)
 
-        print(f"  ✓ Exported to: {output_path}")
+        print(f"  + Exported to: {output_path}")
         print(f"  - Queues: {len(state.get('queues', {}))}")
         print(f"  - Seen sets: {len(state.get('seen', {}))}")
         print(f"  - Robots cache: {len(state.get('robots_cache', {}))}")
+        print(f"  - Structures: {len(state.get('structures', {}))}")
 
         return state
 
     async def clear_all(self, confirm: bool = False) -> bool:
         """Clear all crawler data."""
         if not confirm:
-            print("\n⚠️  This will delete ALL crawler data!")
+            print("\n!!  This will delete ALL crawler data!")
             response = input("Type 'yes' to confirm: ")
             if response.lower() != "yes":
                 print("Aborted.")
@@ -306,11 +317,15 @@ class CrawlerInspector:
 
         # Clear URL store
         await self.url_store.clear()
-        print("  ✓ URL frontier cleared")
+        print("  + URL frontier cleared")
 
         # Clear robots cache
         cleared = await self.robots_cache.clear()
-        print(f"  ✓ Robots cache cleared ({cleared} entries)")
+        print(f"  + Robots cache cleared ({cleared} entries)")
+
+        # Clear structure store
+        cleared = await self.structure_store.clear()
+        print(f"  + Structure store cleared ({cleared} entries)")
 
         return True
 
@@ -323,7 +338,7 @@ class CrawlerInspector:
         print(f"{'='*60}\n")
 
         if entry is None:
-            print(f"  ❌ No URLs in queue for {domain}")
+            print(f"  X No URLs in queue for {domain}")
             return None
 
         print(f"  URL: {entry.url}")
@@ -352,13 +367,13 @@ class CrawlerInspector:
         print(f"{'='*60}\n")
 
         for domain, page_type in domains[:limit]:
-            sig = await self.structure_store.get_signature(domain, page_type)
-            if sig:
-                print(f"  📄 {domain} [{page_type}]")
-                print(f"      Version: {sig.version} | Captured: {sig.captured_at}")
-                print(f"      Content Hash: {sig.content_hash}")
+            structure = await self.structure_store.get_structure(domain, page_type)
+            if structure:
+                print(f"  [STRUCT] {domain} [{page_type}]")
+                print(f"      Version: {structure.version} | Captured: {structure.captured_at}")
+                print(f"      Content Hash: {structure.content_hash[:32]}..." if structure.content_hash else "      Content Hash: N/A")
             else:
-                print(f"  📄 {domain} [{page_type}] (no signature)")
+                print(f"  [STRUCT] {domain} [{page_type}] (no data)")
             print()
 
         if len(domains) > limit:
@@ -368,7 +383,7 @@ class CrawlerInspector:
 
     async def show_structure(self, domain: str, page_type: str = "unknown") -> dict | None:
         """Show detailed structure for a domain/page_type."""
-        structure = await self.structure_store.get_latest(domain, page_type)
+        structure = await self.structure_store.get_structure(domain, page_type)
 
         print(f"\n{'='*60}")
         print(f"PAGE STRUCTURE: {domain} [{page_type}]")
@@ -378,14 +393,14 @@ class CrawlerInspector:
             # Try to find any page type for this domain
             all_domains = await self.structure_store.list_domains()
             matching = [(d, pt) for d, pt in all_domains if d == domain]
-            
+
             if matching:
-                print(f"  ❌ No structure for page_type '{page_type}'")
+                print(f"  X No structure for page_type '{page_type}'")
                 print(f"  Available page types for {domain}:")
                 for d, pt in matching:
                     print(f"    - {pt}")
             else:
-                print(f"  ❌ No structures found for domain: {domain}")
+                print(f"  X No structures found for domain: {domain}")
             return None
 
         print(f"  Version: {structure.version}")
@@ -447,25 +462,6 @@ class CrawlerInspector:
             for sig in structure.script_signatures[:10]:
                 print(f"    - {sig}")
 
-        # Semantic description (for ML)
-        description = await self.structure_store.get_description(domain, page_type)
-        if description:
-            print(f"\n  Semantic Description (for ML embedding):")
-            # Word wrap the description
-            words = description.split()
-            lines = []
-            current_line = "    "
-            for word in words:
-                if len(current_line) + len(word) + 1 > 76:
-                    lines.append(current_line)
-                    current_line = "    " + word
-                else:
-                    current_line += " " + word if current_line != "    " else word
-            if current_line != "    ":
-                lines.append(current_line)
-            for line in lines:
-                print(line)
-
         return structure.to_dict()
 
     async def show_structure_history(self, domain: str, page_type: str = "unknown", limit: int = 10) -> list:
@@ -477,26 +473,26 @@ class CrawlerInspector:
         print(f"{'='*60}\n")
 
         if not history:
-            print(f"  ❌ No history found for {domain} [{page_type}]")
+            print(f"  X No history found for {domain} [{page_type}]")
             return []
 
         for structure in history:
             tag_count = len(structure.tag_hierarchy.get("tag_counts", {}))
             class_count = len(structure.css_class_map)
-            
+
             print(f"  Version {structure.version}")
             print(f"    Captured: {structure.captured_at}")
-            print(f"    Hash: {structure.content_hash[:16]}...")
+            print(f"    Hash: {structure.content_hash[:16]}..." if structure.content_hash else "    Hash: N/A")
             print(f"    Tags: {tag_count} | Classes: {class_count}")
             print()
 
         return [s.to_dict() for s in history]
 
     async def compare_structures(
-        self, 
-        domain: str, 
-        page_type: str, 
-        version1: int, 
+        self,
+        domain: str,
+        page_type: str,
+        version1: int,
         version2: int
     ) -> dict | None:
         """Compare two structure versions."""
@@ -509,10 +505,10 @@ class CrawlerInspector:
         print(f"{'='*60}\n")
 
         if struct1 is None:
-            print(f"  ❌ Version {version1} not found")
+            print(f"  X Version {version1} not found")
             return None
         if struct2 is None:
-            print(f"  ❌ Version {version2} not found")
+            print(f"  X Version {version2} not found")
             return None
 
         # Compare tags
@@ -520,7 +516,7 @@ class CrawlerInspector:
         tags2 = set(struct2.tag_hierarchy.get("tag_counts", {}).keys())
         added_tags = tags2 - tags1
         removed_tags = tags1 - tags2
-        
+
         print(f"  Tag Changes:")
         print(f"    Common: {len(tags1 & tags2)}")
         if added_tags:
@@ -544,7 +540,7 @@ class CrawlerInspector:
         # Compare landmarks
         landmarks1 = set(struct1.semantic_landmarks.keys())
         landmarks2 = set(struct2.semantic_landmarks.keys())
-        
+
         print(f"\n  Landmark Changes:")
         print(f"    V{version1}: {', '.join(landmarks1) or 'none'}")
         print(f"    V{version2}: {', '.join(landmarks2) or 'none'}")
@@ -553,7 +549,7 @@ class CrawlerInspector:
         print(f"\n  Content Hash:")
         print(f"    V{version1}: {struct1.content_hash}")
         print(f"    V{version2}: {struct2.content_hash}")
-        print(f"    Match: {'✓' if struct1.content_hash == struct2.content_hash else '✗'}")
+        print(f"    Match: {'Yes' if struct1.content_hash == struct2.content_hash else 'No'}")
 
         # Calculate similarity (simple Jaccard)
         all_tags = tags1 | tags2
@@ -579,53 +575,59 @@ class CrawlerInspector:
             "classes_removed": list(removed_classes),
         }
 
-    async def show_semantic_description(self, domain: str, page_type: str = "unknown") -> str | None:
-        """Show semantic description suitable for ML embedding."""
-        description = await self.structure_store.get_description(domain, page_type)
+    async def show_strategy(self, domain: str, page_type: str = "unknown") -> dict | None:
+        """Show extraction strategy for a domain/page_type."""
+        strategy = await self.structure_store.get_strategy(domain, page_type)
 
         print(f"\n{'='*60}")
-        print(f"SEMANTIC DESCRIPTION: {domain} [{page_type}]")
+        print(f"EXTRACTION STRATEGY: {domain} [{page_type}]")
         print(f"{'='*60}\n")
 
-        if description is None:
-            # Try to find any page type for this domain
-            all_domains = await self.structure_store.list_domains()
-            matching = [(d, pt) for d, pt in all_domains if d == domain]
-            
-            if matching:
-                print(f"  ❌ No description for page_type '{page_type}'")
-                print(f"  Available page types for {domain}:")
-                for d, pt in matching:
-                    print(f"    - {pt}")
-            else:
-                print(f"  ❌ No structures found for domain: {domain}")
+        if strategy is None:
+            print(f"  X No strategy found for {domain} [{page_type}]")
             return None
 
-        # Print description with word wrap
-        print("  Description for ML embedding:\n")
-        words = description.split()
-        current_line = "    "
-        for word in words:
-            if len(current_line) + len(word) + 1 > 76:
-                print(current_line)
-                current_line = "    " + word
-            else:
-                current_line += " " + word if current_line.strip() else "    " + word
-        if current_line.strip():
-            print(current_line)
+        print(f"  Version: {strategy.version}")
+        print(f"  Learned At: {strategy.learned_at}")
+        print(f"  Learning Source: {strategy.learning_source}")
+        print(f"  Required Fields: {', '.join(strategy.required_fields)}")
+        print(f"  Min Content Length: {strategy.min_content_length}")
 
-        # Show character count for context
-        print(f"\n  Character count: {len(description)}")
-        print(f"  Word count: {len(words)}")
-        
-        # Show if embedding exists
-        sig = await self.structure_store.get_signature(domain, page_type)
-        if sig and sig.embedding:
-            print(f"  Embedding: ✓ ({len(sig.embedding)} dimensions)")
-        else:
-            print(f"  Embedding: Not generated (enable with enable_embeddings=True)")
+        if strategy.title:
+            print(f"\n  Title Selector:")
+            print(f"    Primary: {strategy.title.primary}")
+            if strategy.title.fallbacks:
+                print(f"    Fallbacks: {strategy.title.fallbacks}")
+            print(f"    Confidence: {strategy.title.confidence:.2f}")
 
-        return description
+        if strategy.content:
+            print(f"\n  Content Selector:")
+            print(f"    Primary: {strategy.content.primary}")
+            if strategy.content.fallbacks:
+                print(f"    Fallbacks: {strategy.content.fallbacks}")
+            print(f"    Confidence: {strategy.content.confidence:.2f}")
+
+        if strategy.metadata:
+            print(f"\n  Metadata Selectors:")
+            for key, rule in strategy.metadata.items():
+                print(f"    {key}: {rule.primary}")
+
+        if strategy.wait_for_selectors:
+            print(f"\n  Wait-for Selectors:")
+            for selector in strategy.wait_for_selectors:
+                print(f"    - {selector}")
+
+        if strategy.confidence_scores:
+            print(f"\n  Confidence Scores:")
+            for field, score in strategy.confidence_scores.items():
+                print(f"    {field}: {score:.2f}")
+
+        return {
+            "domain": strategy.domain,
+            "page_type": strategy.page_type,
+            "version": strategy.version,
+            "learning_source": strategy.learning_source,
+        }
 
 
 async def main():
@@ -647,7 +649,7 @@ Examples:
     %(prog)s --structure example.com --page-type article  Show specific page type
     %(prog)s --structure-history example.com  Show structure versions
     %(prog)s --compare example.com 1 2  Compare structure versions
-    %(prog)s --description example.com  Show semantic description for ML
+    %(prog)s --strategy example.com   Show extraction strategy
     %(prog)s --export state.json      Export full state to JSON
     %(prog)s --clear                  Clear all data (with confirm)
         """
@@ -662,15 +664,15 @@ Examples:
     parser.add_argument("--next", metavar="DOMAIN", help="Peek at next URL for domain")
     parser.add_argument("--export", metavar="FILE", help="Export full state to JSON file")
     parser.add_argument("--clear", action="store_true", help="Clear all crawler data")
-    
+
     # Structure inspection commands
     parser.add_argument("--structures", action="store_true", help="List all tracked page structures")
     parser.add_argument("--structure", metavar="DOMAIN", help="Show structure for a domain")
     parser.add_argument("--page-type", metavar="TYPE", default="unknown", help="Page type for structure commands (default: unknown)")
     parser.add_argument("--structure-history", metavar="DOMAIN", help="Show structure version history")
     parser.add_argument("--compare", nargs=3, metavar=("DOMAIN", "V1", "V2"), help="Compare two structure versions")
-    parser.add_argument("--description", metavar="DOMAIN", help="Show semantic description for ML embedding")
-    
+    parser.add_argument("--strategy", metavar="DOMAIN", help="Show extraction strategy for domain")
+
     parser.add_argument("--limit", type=int, default=20, help="Max results to show (default: 20)")
     parser.add_argument("--redis-url", default=None, help="Redis URL (default: from config or redis://localhost:6379/0)")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompts")
@@ -690,10 +692,10 @@ Examples:
         inspector = CrawlerInspector(client)
 
         if not await inspector.ping():
-            print(f"❌ Cannot connect to Redis at {redis_url}")
+            print(f"X Cannot connect to Redis at {redis_url}")
             return 1
     except Exception as e:
-        print(f"❌ Redis connection error: {e}")
+        print(f"X Redis connection error: {e}")
         return 1
 
     try:
@@ -721,15 +723,18 @@ Examples:
         elif args.compare:
             domain, v1, v2 = args.compare
             await inspector.compare_structures(domain, args.page_type, int(v1), int(v2))
-        elif args.description:
-            await inspector.show_semantic_description(args.description, args.page_type)
+        elif args.strategy:
+            await inspector.show_strategy(args.strategy, args.page_type)
         elif args.domains:
             await inspector.list_domains(args.limit)
+        elif args.stats:
+            await inspector.show_stats()
         else:
-            # Default: show stats and list domains
+            # Default: show stats and domains
             await inspector.show_stats()
             print()
             await inspector.list_domains(10)
+
     finally:
         await client.aclose()
 
