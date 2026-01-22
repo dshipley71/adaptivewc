@@ -361,20 +361,60 @@ class StructureStore:
 
         return success, variant_id, is_new
 
-    async def get_variant_stats(
+    async def get_variant_stats(self) -> dict[str, Any]:
+        """
+        Get global statistics about all variants across all domains.
+
+        Returns:
+            Dictionary with global variant statistics.
+        """
+        try:
+            # Get all domain:page_type combinations
+            domains = await self.list_domains()
+
+            total_variants = 0
+            domains_with_variants = 0
+            variants_by_domain: dict[str, int] = {}
+
+            for domain, page_type in domains:
+                variants = await self.get_all_variants(domain, page_type)
+                variant_count = len(variants)
+
+                if variant_count > 0:
+                    total_variants += variant_count
+                    key = f"{domain}:{page_type}"
+                    variants_by_domain[key] = variant_count
+
+                    if variant_count > 1:  # More than just "default"
+                        domains_with_variants += 1
+
+            return {
+                "total_variants": total_variants,
+                "domains_with_variants": domains_with_variants,
+                "variants_by_domain": variants_by_domain,
+            }
+        except Exception as e:
+            self.logger.error("Failed to get variant stats", error=str(e))
+            return {
+                "total_variants": 0,
+                "domains_with_variants": 0,
+                "variants_by_domain": {},
+            }
+
+    async def get_variant_stats_for_page(
         self,
         domain: str,
         page_type: str,
     ) -> dict[str, Any]:
         """
-        Get statistics about variants for a domain/page_type.
+        Get statistics about variants for a specific domain/page_type.
 
         Args:
             domain: Domain name.
             page_type: Page type identifier.
 
         Returns:
-            Dictionary with variant statistics.
+            Dictionary with variant statistics for the specific page.
         """
         variants = await self.get_all_variants(domain, page_type)
 
