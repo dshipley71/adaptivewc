@@ -1,0 +1,58 @@
+# =============================================================================
+# Adaptive Web Crawler - LLM-Powered Configuration
+# =============================================================================
+# 
+# This configuration uses Claude to generate rich semantic descriptions
+# of page structures for better change detection.
+#
+# =============================================================================
+
+crawl:
+  seed_urls:
+    - "https://example.com"
+  output_dir: "./output"
+  max_depth: 5
+  max_pages: 1000
+  allowed_domains: []
+  exclude_patterns:
+    - "*.pdf"
+    - "*/admin/*"
+
+identity:
+  user_agent: "AdaptiveCrawler/1.0 (+https://example.com/bot)"
+
+redis:
+  url: "redis://localhost:6379/0"
+
+rate_limit:
+  default_delay: 1.0
+  max_concurrent_per_domain: 2
+  max_concurrent_global: 10
+
+# -----------------------------------------------------------------------------
+# LLM-Powered Structure Store
+# -----------------------------------------------------------------------------
+structure_store:
+  store_type: "llm"           # Use LLM for semantic descriptions
+  enable_embeddings: true     # Generate embeddings for similarity search
+  embedding_model: "all-MiniLM-L6-v2"
+  ttl_seconds: 604800         # 7 days
+  max_versions: 10
+
+  llm:
+    provider: "anthropic"     # Using Claude
+    model: "claude-sonnet-4-20250514"  # Or leave empty for default
+    api_key: ""               # Set via ANTHROPIC_API_KEY env var
+
+adaptive:
+  enabled: true
+  change_threshold: 0.3
+
+safety:
+  max_page_size_mb: 10.0
+  request_timeout_seconds: 30.0
+  max_retries: 3
+
+logging:
+  level: "INFO"
+  format: "json"
