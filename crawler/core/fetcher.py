@@ -11,7 +11,7 @@ Implements the compliance pipeline:
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -32,6 +32,18 @@ from crawler.storage.robots_cache import RobotsCache
 from crawler.utils.logging import CrawlerLogger
 from crawler.utils.url_utils import get_domain, is_private_ip
 from crawler.utils import metrics
+
+
+@dataclass
+class CacheEntry:
+    """Cache entry with TTL support."""
+
+    value: Any
+    expires_at: float
+
+    def is_expired(self) -> bool:
+        """Check if entry has expired."""
+        return time.monotonic() > self.expires_at
 
 
 @dataclass
@@ -98,8 +110,11 @@ class Fetcher:
         # HTTP client
         self._client: httpx.AsyncClient | None = None
 
-        # Local robots.txt cache (fallback if no Redis)
-        self._robots_local_cache: dict[str, RobotsTxt] = {}
+        # Local robots.txt cache (fallback if no Redis) with TTL
+        self._robots_local_cache: dict[str, CacheEntry] = {}
+        self._cache_lock = asyncio.Lock()
+        self._cache_ttl = 86400  # 24 hours
+        self._max_cache_size = 1000  # Prevent unbounded growth
 
     async def start(self) -> None:
         """Initialize the HTTP client."""
@@ -261,16 +276,25 @@ class Fetcher:
         )
 
     async def _get_robots_txt(self, domain: str) -> RobotsTxt:
-        """Get robots.txt for a domain, using cache."""
-        # Try cache first
+        """Get robots.txt for a domain, using cache with thread safety."""
+        # Try Redis cache first
         if self.robots_cache:
-            cached = await self.robots_cache.get(domain)
-            if cached:
-                return cached
+            try:
+                cached = await self.robots_cache.get(domain)
+                if cached:
+                    return cached
+            except Exception as e:
+                self.logger.debug("Redis cache error", domain=domain, error=str(e))
 
-        # Check local cache
-        if domain in self._robots_local_cache:
-            return self._robots_local_cache[domain]
+        # Check local cache with thread safety
+        async with self._cache_lock:
+            if domain in self._robots_local_cache:
+                entry = self._robots_local_cache[domain]
+                if not entry.is_expired():
+                    return entry.value
+                else:
+                    # Remove expired entry
+                    del self._robots_local_cache[domain]
 
         # Fetch robots.txt
         robots_url = f"https://{domain}/robots.txt"
@@ -280,10 +304,11 @@ class Fetcher:
                 await self.start()
 
             assert self._client is not None
-            response = await self._client.get(robots_url)
+            response = await self._client.get(robots_url, timeout=10.0)
             content = response.text
             status_code = response.status_code
-        except Exception:
+        except Exception as e:
+            self.logger.debug("Failed to fetch robots.txt", domain=domain, error=str(e))
             content = ""
             status_code = 500
 
@@ -292,12 +317,44 @@ class Fetcher:
         parser = RobotsParser()
         robots_txt = parser.parse(content, domain, status_code)
 
-        # Cache
+        # Cache in Redis if available
         if self.robots_cache:
-            await self.robots_cache.set(domain, robots_txt)
-        self._robots_local_cache[domain] = robots_txt
+            try:
+                await self.robots_cache.set(domain, robots_txt)
+            except Exception as e:
+                self.logger.debug("Failed to cache in Redis", domain=domain, error=str(e))
+
+        # Cache locally with TTL and thread safety
+        async with self._cache_lock:
+            # Clean up if cache too large
+            if len(self._robots_local_cache) >= self._max_cache_size:
+                await self._cleanup_local_cache()
+
+            self._robots_local_cache[domain] = CacheEntry(
+                value=robots_txt,
+                expires_at=time.monotonic() + self._cache_ttl,
+            )
 
         return robots_txt
+
+    async def _cleanup_local_cache(self) -> None:
+        """Remove expired entries and oldest entries if still too large."""
+        # Remove expired entries
+        expired = [
+            k for k, v in self._robots_local_cache.items() if v.is_expired()
+        ]
+        for key in expired:
+            del self._robots_local_cache[key]
+
+        # If still too large, remove oldest 25%
+        if len(self._robots_local_cache) >= self._max_cache_size:
+            sorted_entries = sorted(
+                self._robots_local_cache.items(),
+                key=lambda x: x[1].expires_at,
+            )
+            to_remove = len(sorted_entries) // 4
+            for key, _ in sorted_entries[:to_remove]:
+                del self._robots_local_cache[key]
 
     async def _process_pii(self, result: FetchResult) -> FetchResult:
         """Process PII in response content."""
