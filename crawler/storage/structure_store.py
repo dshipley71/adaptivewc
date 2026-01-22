@@ -167,7 +167,16 @@ class StructureStore:
 
             # Save strategy if provided
             if strategy:
-                await self.save_strategy(strategy)
+                self.logger.info(
+                    "Saving strategy with structure",
+                    domain=structure.domain,
+                    page_type=structure.page_type,
+                    strategy_domain=strategy.domain,
+                    strategy_page_type=strategy.page_type,
+                )
+                saved = await self.save_strategy(strategy)
+                if not saved:
+                    self.logger.warning("Failed to save strategy with structure")
 
             # Track domain/page_type combination
             await self.redis.sadd(
@@ -301,13 +310,16 @@ class StructureStore:
 
         try:
             data = self._serialize_strategy(strategy)
-            await self.redis.setex(key, self.ttl, json.dumps(data))
+            serialized = json.dumps(data)
+            await self.redis.setex(key, self.ttl, serialized)
 
-            self.logger.debug(
-                "Saved strategy",
+            self.logger.info(
+                "Saved strategy to Redis",
+                key=key,
                 domain=strategy.domain,
                 page_type=strategy.page_type,
                 version=strategy.version,
+                data_length=len(serialized),
             )
             return True
 

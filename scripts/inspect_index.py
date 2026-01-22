@@ -822,6 +822,22 @@ class CrawlerInspector:
                 print(f"  X No strategies found for domain: {domain}")
                 return None
 
+        # Debug: Check what keys exist for strategies
+        strategy_keys = await self.redis.keys(b"crawler:strategy:*")
+        print(f"\n  [DEBUG] Strategy keys in Redis: {len(strategy_keys)}")
+        for key in strategy_keys[:5]:
+            key_str = key.decode() if isinstance(key, bytes) else key
+            print(f"    - {key_str}")
+
+        # Check raw data
+        strategy_key = f"crawler:strategy:{domain}:{page_type}"
+        raw_data = await self.redis.get(strategy_key)
+        print(f"  [DEBUG] Looking for key: {strategy_key}")
+        print(f"  [DEBUG] Raw data found: {raw_data is not None}")
+        if raw_data:
+            print(f"  [DEBUG] Raw data type: {type(raw_data)}")
+            print(f"  [DEBUG] Raw data preview: {str(raw_data)[:200]}...")
+
         strategy = await self.structure_store.get_strategy(domain, page_type)
 
         print(f"\n{'='*60}")
