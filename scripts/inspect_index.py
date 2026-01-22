@@ -2,7 +2,7 @@
 Diagnostic script to inspect data in the Adaptive Web Crawler.
 
 Provides comprehensive inspection of URL frontier, robots.txt cache,
-page structures, and crawl statistics stored in Redis.
+page structures, extraction strategies, and crawl statistics stored in Redis.
 
 Location: adaptivewc/scripts/inspect_index.py
 
@@ -16,6 +16,7 @@ Usage:
     python scripts/inspect_index.py --search "keyword"       # Search queued URLs
     python scripts/inspect_index.py --structures             # List tracked page structures
     python scripts/inspect_index.py --structure example.com  # Show structure for domain
+    python scripts/inspect_index.py --strategy example.com   # Show extraction strategy
     python scripts/inspect_index.py --export output.json     # Export full state
     python scripts/inspect_index.py --clear                  # Clear all data (with confirmation)
 """
@@ -39,6 +40,207 @@ from crawler.storage.url_store import URLStore, URLEntry
 from crawler.storage.robots_cache import RobotsCache
 from crawler.storage.structure_store import StructureStore
 from crawler.models import PageStructure, ExtractionStrategy
+
+
+class StructureDescriptionGenerator:
+    """Generates human-readable text descriptions of page structures."""
+
+    @staticmethod
+    def generate(structure: PageStructure) -> str:
+        """
+        Generate a semantic text description of a page structure.
+
+        Args:
+            structure: PageStructure to describe.
+
+        Returns:
+            Human-readable text description.
+        """
+        lines = []
+
+        # Header
+        lines.append(f"Website Structure Analysis for {structure.domain}")
+        lines.append(f"Page Type: {structure.page_type}")
+        lines.append(f"URL Pattern: {structure.url_pattern or 'N/A'}")
+        lines.append(f"Analyzed: {structure.captured_at}")
+        lines.append(f"Version: {structure.version}")
+        lines.append("")
+
+        # DOM Structure Summary
+        tag_counts = structure.tag_hierarchy.get("tag_counts", {}) if structure.tag_hierarchy else {}
+        if tag_counts:
+            total_elements = sum(tag_counts.values())
+            lines.append(f"DOM Structure: {total_elements} total elements, {len(tag_counts)} unique tag types")
+
+            # Identify page characteristics
+            characteristics = []
+            if tag_counts.get("article", 0) > 0:
+                characteristics.append("article-based content")
+            if tag_counts.get("nav", 0) > 0:
+                characteristics.append(f"{tag_counts['nav']} navigation regions")
+            if tag_counts.get("form", 0) > 0:
+                characteristics.append(f"{tag_counts['form']} form(s)")
+            if tag_counts.get("table", 0) > 0:
+                characteristics.append(f"{tag_counts['table']} data table(s)")
+            if tag_counts.get("iframe", 0) > 0:
+                characteristics.append(f"{tag_counts['iframe']} embedded iframe(s)")
+            if tag_counts.get("video", 0) > 0 or tag_counts.get("audio", 0) > 0:
+                characteristics.append("multimedia content")
+
+            if characteristics:
+                lines.append(f"Page Characteristics: {', '.join(characteristics)}")
+            lines.append("")
+
+        # Semantic Landmarks
+        if structure.semantic_landmarks:
+            lines.append(f"Semantic Landmarks ({len(structure.semantic_landmarks)}):")
+            for landmark, selector in structure.semantic_landmarks.items():
+                lines.append(f"  - {landmark}: {selector}")
+            lines.append("")
+
+        # Content Regions
+        if structure.content_regions:
+            lines.append(f"Content Regions ({len(structure.content_regions)}):")
+            for region in structure.content_regions:
+                conf_str = f" (confidence: {region.confidence:.0%})" if region.confidence else ""
+                lines.append(f"  - {region.name}: {region.primary_selector}{conf_str}")
+                if region.fallback_selectors:
+                    lines.append(f"    Fallbacks: {', '.join(region.fallback_selectors)}")
+            lines.append("")
+
+        # Navigation
+        if structure.navigation_selectors:
+            lines.append(f"Navigation Elements ({len(structure.navigation_selectors)}):")
+            for sel in structure.navigation_selectors[:5]:
+                lines.append(f"  - {sel}")
+            if len(structure.navigation_selectors) > 5:
+                lines.append(f"  ... and {len(structure.navigation_selectors) - 5} more")
+            lines.append("")
+
+        # Pagination
+        if structure.pagination_pattern:
+            lines.append("Pagination Detected:")
+            if structure.pagination_pattern.next_selector:
+                lines.append(f"  Next: {structure.pagination_pattern.next_selector}")
+            if structure.pagination_pattern.prev_selector:
+                lines.append(f"  Previous: {structure.pagination_pattern.prev_selector}")
+            if structure.pagination_pattern.pattern:
+                lines.append(f"  URL Pattern: {structure.pagination_pattern.pattern}")
+            lines.append("")
+
+        # Iframes
+        if structure.iframe_locations:
+            lines.append(f"Embedded Iframes ({len(structure.iframe_locations)}):")
+            for iframe in structure.iframe_locations:
+                dynamic = " [dynamic]" if iframe.is_dynamic else ""
+                lines.append(f"  - {iframe.selector} ({iframe.position}){dynamic}")
+                lines.append(f"    Source: {iframe.src_pattern}")
+            lines.append("")
+
+        # CSS Classes Summary
+        if structure.css_class_map:
+            lines.append(f"CSS Classes: {len(structure.css_class_map)} unique classes detected")
+            # Show top classes by usage
+            top_classes = sorted(structure.css_class_map.items(), key=lambda x: -x[1])[:5]
+            if top_classes:
+                lines.append("  Most used: " + ", ".join(f".{cls}({count})" for cls, count in top_classes))
+            lines.append("")
+
+        # Script Signatures
+        if structure.script_signatures:
+            lines.append(f"JavaScript Libraries/Scripts ({len(structure.script_signatures)}):")
+            for sig in structure.script_signatures[:10]:
+                lines.append(f"  - {sig}")
+            lines.append("")
+
+        # Content Hash
+        lines.append(f"Content Hash: {structure.content_hash}")
+
+        return "\n".join(lines)
+
+
+class StrategyDescriptionGenerator:
+    """Generates human-readable descriptions of extraction strategies."""
+
+    @staticmethod
+    def generate(strategy: ExtractionStrategy) -> str:
+        """
+        Generate a human-readable description of an extraction strategy.
+
+        Args:
+            strategy: ExtractionStrategy to describe.
+
+        Returns:
+            Human-readable text description.
+        """
+        lines = []
+
+        # Header
+        lines.append(f"Extraction Strategy for {strategy.domain}")
+        lines.append(f"Page Type: {strategy.page_type}")
+        lines.append(f"Version: {strategy.version}")
+        lines.append(f"Learned: {strategy.learned_at}")
+        lines.append(f"Source: {strategy.learning_source}")
+        lines.append("")
+
+        # Selector Rules
+        lines.append("EXTRACTION SELECTORS:")
+        lines.append("-" * 40)
+
+        if strategy.title:
+            conf = f" ({strategy.title.confidence:.0%})" if strategy.title.confidence else ""
+            lines.append(f"Title{conf}:")
+            lines.append(f"  Primary: {strategy.title.primary}")
+            if strategy.title.fallbacks:
+                lines.append(f"  Fallbacks: {', '.join(strategy.title.fallbacks)}")
+            lines.append(f"  Method: {strategy.title.extraction_method}")
+            lines.append("")
+
+        if strategy.content:
+            conf = f" ({strategy.content.confidence:.0%})" if strategy.content.confidence else ""
+            lines.append(f"Content{conf}:")
+            lines.append(f"  Primary: {strategy.content.primary}")
+            if strategy.content.fallbacks:
+                lines.append(f"  Fallbacks: {', '.join(strategy.content.fallbacks)}")
+            lines.append(f"  Method: {strategy.content.extraction_method}")
+            lines.append("")
+
+        if strategy.images:
+            conf = f" ({strategy.images.confidence:.0%})" if strategy.images.confidence else ""
+            lines.append(f"Images{conf}:")
+            lines.append(f"  Primary: {strategy.images.primary}")
+            lines.append("")
+
+        if strategy.links:
+            conf = f" ({strategy.links.confidence:.0%})" if strategy.links.confidence else ""
+            lines.append(f"Links{conf}:")
+            lines.append(f"  Primary: {strategy.links.primary}")
+            lines.append("")
+
+        if strategy.metadata:
+            lines.append("Metadata Fields:")
+            for key, rule in strategy.metadata.items():
+                conf = f" ({rule.confidence:.0%})" if rule.confidence else ""
+                lines.append(f"  {key}{conf}: {rule.primary}")
+            lines.append("")
+
+        # Settings
+        lines.append("EXTRACTION SETTINGS:")
+        lines.append("-" * 40)
+        lines.append(f"Required Fields: {', '.join(strategy.required_fields)}")
+        lines.append(f"Min Content Length: {strategy.min_content_length} chars")
+
+        if strategy.wait_for_selectors:
+            lines.append(f"Wait-for Selectors: {', '.join(strategy.wait_for_selectors)}")
+
+        if strategy.confidence_scores:
+            lines.append("")
+            lines.append("Confidence Scores:")
+            for field, score in sorted(strategy.confidence_scores.items()):
+                bar = "█" * int(score * 10) + "░" * (10 - int(score * 10))
+                lines.append(f"  {field}: {bar} {score:.0%}")
+
+        return "\n".join(lines)
 
 
 class CrawlerInspector:
@@ -280,14 +482,18 @@ class CrawlerInspector:
             if robots:
                 state["robots_cache"][domain] = robots.to_dict()
 
-        # Add structures
+        # Add structures and strategies
         state["structures"] = {}
+        state["strategies"] = {}
         domains = await self.structure_store.list_domains()
         for domain, page_type in domains:
             structure = await self.structure_store.get_structure(domain, page_type)
+            strategy = await self.structure_store.get_strategy(domain, page_type)
+            key = f"{domain}:{page_type}"
             if structure:
-                key = f"{domain}:{page_type}"
-                state["structures"][key] = structure.to_dict()
+                state["structures"][key] = self._structure_to_export_dict(structure)
+            if strategy:
+                state["strategies"][key] = self._strategy_to_export_dict(strategy)
 
         state["exported_at"] = datetime.utcnow().isoformat()
 
@@ -299,8 +505,79 @@ class CrawlerInspector:
         print(f"  - Seen sets: {len(state.get('seen', {}))}")
         print(f"  - Robots cache: {len(state.get('robots_cache', {}))}")
         print(f"  - Structures: {len(state.get('structures', {}))}")
+        print(f"  - Strategies: {len(state.get('strategies', {}))}")
 
         return state
+
+    def _structure_to_export_dict(self, structure: PageStructure) -> dict:
+        """Convert PageStructure to export dict with all fields."""
+        return {
+            "domain": structure.domain,
+            "page_type": structure.page_type,
+            "url_pattern": structure.url_pattern,
+            "captured_at": structure.captured_at.isoformat() if structure.captured_at else None,
+            "version": structure.version,
+            "content_hash": structure.content_hash,
+            "tag_hierarchy": structure.tag_hierarchy,
+            "css_class_map": structure.css_class_map,
+            "id_attributes": list(structure.id_attributes) if structure.id_attributes else [],
+            "semantic_landmarks": structure.semantic_landmarks,
+            "content_regions": [
+                {
+                    "name": r.name,
+                    "primary_selector": r.primary_selector,
+                    "fallback_selectors": r.fallback_selectors,
+                    "content_type": r.content_type,
+                    "confidence": r.confidence,
+                }
+                for r in (structure.content_regions or [])
+            ],
+            "navigation_selectors": structure.navigation_selectors,
+            "pagination_pattern": {
+                "next_selector": structure.pagination_pattern.next_selector,
+                "prev_selector": structure.pagination_pattern.prev_selector,
+                "pattern": structure.pagination_pattern.pattern,
+            } if structure.pagination_pattern else None,
+            "iframe_locations": [
+                {
+                    "selector": i.selector,
+                    "src_pattern": i.src_pattern,
+                    "position": i.position,
+                    "is_dynamic": i.is_dynamic,
+                }
+                for i in (structure.iframe_locations or [])
+            ],
+            "script_signatures": structure.script_signatures,
+        }
+
+    def _strategy_to_export_dict(self, strategy: ExtractionStrategy) -> dict:
+        """Convert ExtractionStrategy to export dict."""
+        def rule_to_dict(rule):
+            if rule is None:
+                return None
+            return {
+                "primary": rule.primary,
+                "fallbacks": rule.fallbacks,
+                "extraction_method": rule.extraction_method,
+                "confidence": rule.confidence,
+            }
+
+        return {
+            "domain": strategy.domain,
+            "page_type": strategy.page_type,
+            "version": strategy.version,
+            "learned_at": strategy.learned_at.isoformat() if strategy.learned_at else None,
+            "learning_source": strategy.learning_source,
+            "title": rule_to_dict(strategy.title),
+            "content": rule_to_dict(strategy.content),
+            "images": rule_to_dict(strategy.images),
+            "links": rule_to_dict(strategy.links),
+            "metadata": {k: rule_to_dict(v) for k, v in (strategy.metadata or {}).items()},
+            "required_fields": strategy.required_fields,
+            "min_content_length": strategy.min_content_length,
+            "wait_for_selectors": strategy.wait_for_selectors,
+            "confidence_scores": strategy.confidence_scores,
+        }
 
     async def clear_all(self, confirm: bool = False) -> bool:
         """Clear all crawler data."""
@@ -358,6 +635,14 @@ class CrawlerInspector:
     # Structure Store Methods
     # =========================================================================
 
+    async def _get_default_page_type(self, domain: str) -> str | None:
+        """Get the first available page_type for a domain."""
+        all_domains = await self.structure_store.list_domains()
+        for d, pt in all_domains:
+            if d == domain:
+                return pt
+        return None
+
     async def list_structures(self, limit: int = 50) -> list[tuple[str, str]]:
         """List all tracked page structures."""
         domains = await self.structure_store.list_domains()
@@ -368,10 +653,23 @@ class CrawlerInspector:
 
         for domain, page_type in domains[:limit]:
             structure = await self.structure_store.get_structure(domain, page_type)
+            strategy = await self.structure_store.get_strategy(domain, page_type)
             if structure:
                 print(f"  [STRUCT] {domain} [{page_type}]")
                 print(f"      Version: {structure.version} | Captured: {structure.captured_at}")
                 print(f"      Content Hash: {structure.content_hash[:32]}..." if structure.content_hash else "      Content Hash: N/A")
+
+                # Show structure summary
+                tag_counts = structure.tag_hierarchy.get("tag_counts", {}) if structure.tag_hierarchy else {}
+                if tag_counts:
+                    total_elements = sum(tag_counts.values())
+                    print(f"      DOM Elements: {total_elements} | Unique Tags: {len(tag_counts)}")
+
+                if structure.content_regions:
+                    print(f"      Content Regions: {len(structure.content_regions)}")
+
+                if strategy:
+                    print(f"      Strategy: v{strategy.version} ({strategy.learning_source})")
             else:
                 print(f"  [STRUCT] {domain} [{page_type}] (no data)")
             print()
@@ -381,8 +679,18 @@ class CrawlerInspector:
 
         return domains[:limit]
 
-    async def show_structure(self, domain: str, page_type: str = "unknown") -> dict | None:
+    async def show_structure(self, domain: str, page_type: str | None = None) -> dict | None:
         """Show detailed structure for a domain/page_type."""
+        # Auto-detect page_type if not specified
+        if page_type is None or page_type == "unknown":
+            page_type = await self._get_default_page_type(domain)
+            if page_type is None:
+                print(f"\n{'='*60}")
+                print(f"PAGE STRUCTURE: {domain}")
+                print(f"{'='*60}\n")
+                print(f"  X No structures found for domain: {domain}")
+                return None
+
         structure = await self.structure_store.get_structure(domain, page_type)
 
         print(f"\n{'='*60}")
@@ -403,25 +711,53 @@ class CrawlerInspector:
                 print(f"  X No structures found for domain: {domain}")
             return None
 
+        # Generate and print text description
+        description = StructureDescriptionGenerator.generate(structure)
+        print(description)
+
+        print(f"\n{'='*60}")
+        print("RAW STRUCTURE DATA")
+        print(f"{'='*60}\n")
+
         print(f"  Version: {structure.version}")
         print(f"  Captured: {structure.captured_at}")
         print(f"  URL Pattern: {structure.url_pattern}")
         print(f"  Content Hash: {structure.content_hash}")
 
         # Tag hierarchy summary
-        tag_counts = structure.tag_hierarchy.get("tag_counts", {})
+        tag_counts = structure.tag_hierarchy.get("tag_counts", {}) if structure.tag_hierarchy else {}
         if tag_counts:
             print(f"\n  Tag Counts ({len(tag_counts)} unique tags):")
-            top_tags = sorted(tag_counts.items(), key=lambda x: -x[1])[:10]
+            top_tags = sorted(tag_counts.items(), key=lambda x: -x[1])[:15]
             for tag, count in top_tags:
                 print(f"    <{tag}>: {count}")
+            if len(tag_counts) > 15:
+                print(f"    ... and {len(tag_counts) - 15} more tags")
+
+        # Depth distribution
+        depth_dist = structure.tag_hierarchy.get("depth_distribution", {}) if structure.tag_hierarchy else {}
+        if depth_dist:
+            print(f"\n  DOM Depth Distribution:")
+            for depth, count in sorted(depth_dist.items(), key=lambda x: int(x[0]))[:10]:
+                bar = "█" * min(count // 10, 30)
+                print(f"    Level {depth}: {bar} ({count})")
 
         # CSS classes
         if structure.css_class_map:
             print(f"\n  CSS Classes ({len(structure.css_class_map)} unique):")
-            top_classes = sorted(structure.css_class_map.items(), key=lambda x: -x[1])[:10]
+            top_classes = sorted(structure.css_class_map.items(), key=lambda x: -x[1])[:15]
             for cls, count in top_classes:
                 print(f"    .{cls}: {count}")
+            if len(structure.css_class_map) > 15:
+                print(f"    ... and {len(structure.css_class_map) - 15} more classes")
+
+        # IDs
+        if structure.id_attributes:
+            print(f"\n  ID Attributes ({len(structure.id_attributes)}):")
+            for id_attr in list(structure.id_attributes)[:20]:
+                print(f"    #{id_attr}")
+            if len(structure.id_attributes) > 20:
+                print(f"    ... and {len(structure.id_attributes) - 20} more IDs")
 
         # Semantic landmarks
         if structure.semantic_landmarks:
@@ -434,18 +770,24 @@ class CrawlerInspector:
             print(f"\n  Content Regions:")
             for region in structure.content_regions:
                 print(f"    {region.name}: {region.primary_selector} (confidence: {region.confidence:.2f})")
+                if region.fallback_selectors:
+                    print(f"      Fallbacks: {region.fallback_selectors}")
 
         # Navigation
         if structure.navigation_selectors:
             print(f"\n  Navigation Selectors:")
-            for selector in structure.navigation_selectors[:5]:
+            for selector in structure.navigation_selectors[:10]:
                 print(f"    - {selector}")
+            if len(structure.navigation_selectors) > 10:
+                print(f"    ... and {len(structure.navigation_selectors) - 10} more")
 
         # Pagination
         if structure.pagination_pattern:
             print(f"\n  Pagination:")
             if structure.pagination_pattern.next_selector:
                 print(f"    Next: {structure.pagination_pattern.next_selector}")
+            if structure.pagination_pattern.prev_selector:
+                print(f"    Previous: {structure.pagination_pattern.prev_selector}")
             if structure.pagination_pattern.pattern:
                 print(f"    Pattern: {structure.pagination_pattern.pattern}")
 
@@ -455,17 +797,73 @@ class CrawlerInspector:
             for iframe in structure.iframe_locations:
                 print(f"    - {iframe.selector} [{iframe.position}]")
                 print(f"      Pattern: {iframe.src_pattern}")
+                if iframe.is_dynamic:
+                    print(f"      Dynamic: Yes")
 
         # Scripts
         if structure.script_signatures:
             print(f"\n  Script Signatures:")
-            for sig in structure.script_signatures[:10]:
+            for sig in structure.script_signatures[:15]:
                 print(f"    - {sig}")
+            if len(structure.script_signatures) > 15:
+                print(f"    ... and {len(structure.script_signatures) - 15} more")
 
-        return structure.to_dict()
+        return self._structure_to_export_dict(structure)
 
-    async def show_structure_history(self, domain: str, page_type: str = "unknown", limit: int = 10) -> list:
+    async def show_strategy(self, domain: str, page_type: str | None = None) -> dict | None:
+        """Show extraction strategy for a domain/page_type."""
+        # Auto-detect page_type if not specified
+        if page_type is None or page_type == "unknown":
+            page_type = await self._get_default_page_type(domain)
+            if page_type is None:
+                print(f"\n{'='*60}")
+                print(f"EXTRACTION STRATEGY: {domain}")
+                print(f"{'='*60}\n")
+                print(f"  X No strategies found for domain: {domain}")
+                return None
+
+        strategy = await self.structure_store.get_strategy(domain, page_type)
+
+        print(f"\n{'='*60}")
+        print(f"EXTRACTION STRATEGY: {domain} [{page_type}]")
+        print(f"{'='*60}\n")
+
+        if strategy is None:
+            # Try to find any page type for this domain
+            all_domains = await self.structure_store.list_domains()
+            matching = [(d, pt) for d, pt in all_domains if d == domain]
+
+            if matching:
+                print(f"  X No strategy for page_type '{page_type}'")
+                print(f"  Available page types for {domain}:")
+                for d, pt in matching:
+                    print(f"    - {pt}")
+            else:
+                print(f"  X No strategies found for domain: {domain}")
+            return None
+
+        # Generate and print description
+        description = StrategyDescriptionGenerator.generate(strategy)
+        print(description)
+
+        print(f"\n{'='*60}")
+        print("RAW STRATEGY DATA (JSON)")
+        print(f"{'='*60}\n")
+
+        export_dict = self._strategy_to_export_dict(strategy)
+        print(json.dumps(export_dict, indent=2, default=str))
+
+        return export_dict
+
+    async def show_structure_history(self, domain: str, page_type: str | None = None, limit: int = 10) -> list:
         """Show version history for a structure."""
+        # Auto-detect page_type if not specified
+        if page_type is None or page_type == "unknown":
+            page_type = await self._get_default_page_type(domain)
+            if page_type is None:
+                print(f"\n  X No structures found for domain: {domain}")
+                return []
+
         history = await self.structure_store.get_history(domain, page_type, limit)
 
         print(f"\n{'='*60}")
@@ -477,8 +875,9 @@ class CrawlerInspector:
             return []
 
         for structure in history:
-            tag_count = len(structure.tag_hierarchy.get("tag_counts", {}))
-            class_count = len(structure.css_class_map)
+            tag_counts = structure.tag_hierarchy.get("tag_counts", {}) if structure.tag_hierarchy else {}
+            tag_count = len(tag_counts)
+            class_count = len(structure.css_class_map) if structure.css_class_map else 0
 
             print(f"  Version {structure.version}")
             print(f"    Captured: {structure.captured_at}")
@@ -486,16 +885,23 @@ class CrawlerInspector:
             print(f"    Tags: {tag_count} | Classes: {class_count}")
             print()
 
-        return [s.to_dict() for s in history]
+        return [self._structure_to_export_dict(s) for s in history]
 
     async def compare_structures(
         self,
         domain: str,
-        page_type: str,
+        page_type: str | None,
         version1: int,
         version2: int
     ) -> dict | None:
         """Compare two structure versions."""
+        # Auto-detect page_type if not specified
+        if page_type is None or page_type == "unknown":
+            page_type = await self._get_default_page_type(domain)
+            if page_type is None:
+                print(f"\n  X No structures found for domain: {domain}")
+                return None
+
         struct1 = await self.structure_store.get_version(domain, page_type, version1)
         struct2 = await self.structure_store.get_version(domain, page_type, version2)
 
@@ -512,8 +918,8 @@ class CrawlerInspector:
             return None
 
         # Compare tags
-        tags1 = set(struct1.tag_hierarchy.get("tag_counts", {}).keys())
-        tags2 = set(struct2.tag_hierarchy.get("tag_counts", {}).keys())
+        tags1 = set((struct1.tag_hierarchy or {}).get("tag_counts", {}).keys())
+        tags2 = set((struct2.tag_hierarchy or {}).get("tag_counts", {}).keys())
         added_tags = tags2 - tags1
         removed_tags = tags1 - tags2
 
@@ -525,8 +931,8 @@ class CrawlerInspector:
             print(f"    Removed: {', '.join(list(removed_tags)[:10])}")
 
         # Compare classes
-        classes1 = set(struct1.css_class_map.keys())
-        classes2 = set(struct2.css_class_map.keys())
+        classes1 = set((struct1.css_class_map or {}).keys())
+        classes2 = set((struct2.css_class_map or {}).keys())
         added_classes = classes2 - classes1
         removed_classes = classes1 - classes2
 
@@ -538,8 +944,8 @@ class CrawlerInspector:
             print(f"    Removed ({len(removed_classes)}): {', '.join(list(removed_classes)[:10])}")
 
         # Compare landmarks
-        landmarks1 = set(struct1.semantic_landmarks.keys())
-        landmarks2 = set(struct2.semantic_landmarks.keys())
+        landmarks1 = set((struct1.semantic_landmarks or {}).keys())
+        landmarks2 = set((struct2.semantic_landmarks or {}).keys())
 
         print(f"\n  Landmark Changes:")
         print(f"    V{version1}: {', '.join(landmarks1) or 'none'}")
@@ -575,60 +981,6 @@ class CrawlerInspector:
             "classes_removed": list(removed_classes),
         }
 
-    async def show_strategy(self, domain: str, page_type: str = "unknown") -> dict | None:
-        """Show extraction strategy for a domain/page_type."""
-        strategy = await self.structure_store.get_strategy(domain, page_type)
-
-        print(f"\n{'='*60}")
-        print(f"EXTRACTION STRATEGY: {domain} [{page_type}]")
-        print(f"{'='*60}\n")
-
-        if strategy is None:
-            print(f"  X No strategy found for {domain} [{page_type}]")
-            return None
-
-        print(f"  Version: {strategy.version}")
-        print(f"  Learned At: {strategy.learned_at}")
-        print(f"  Learning Source: {strategy.learning_source}")
-        print(f"  Required Fields: {', '.join(strategy.required_fields)}")
-        print(f"  Min Content Length: {strategy.min_content_length}")
-
-        if strategy.title:
-            print(f"\n  Title Selector:")
-            print(f"    Primary: {strategy.title.primary}")
-            if strategy.title.fallbacks:
-                print(f"    Fallbacks: {strategy.title.fallbacks}")
-            print(f"    Confidence: {strategy.title.confidence:.2f}")
-
-        if strategy.content:
-            print(f"\n  Content Selector:")
-            print(f"    Primary: {strategy.content.primary}")
-            if strategy.content.fallbacks:
-                print(f"    Fallbacks: {strategy.content.fallbacks}")
-            print(f"    Confidence: {strategy.content.confidence:.2f}")
-
-        if strategy.metadata:
-            print(f"\n  Metadata Selectors:")
-            for key, rule in strategy.metadata.items():
-                print(f"    {key}: {rule.primary}")
-
-        if strategy.wait_for_selectors:
-            print(f"\n  Wait-for Selectors:")
-            for selector in strategy.wait_for_selectors:
-                print(f"    - {selector}")
-
-        if strategy.confidence_scores:
-            print(f"\n  Confidence Scores:")
-            for field, score in strategy.confidence_scores.items():
-                print(f"    {field}: {score:.2f}")
-
-        return {
-            "domain": strategy.domain,
-            "page_type": strategy.page_type,
-            "version": strategy.version,
-            "learning_source": strategy.learning_source,
-        }
-
 
 async def main():
     parser = argparse.ArgumentParser(
@@ -645,11 +997,11 @@ Examples:
     %(prog)s --search "api"           Search URLs containing "api"
     %(prog)s --next example.com       Peek at next URL for domain
     %(prog)s --structures             List all tracked page structures
-    %(prog)s --structure example.com  Show structure for domain
+    %(prog)s --structure example.com  Show structure for domain (auto-detects page type)
     %(prog)s --structure example.com --page-type article  Show specific page type
+    %(prog)s --strategy example.com   Show extraction strategy for domain
     %(prog)s --structure-history example.com  Show structure versions
     %(prog)s --compare example.com 1 2  Compare structure versions
-    %(prog)s --strategy example.com   Show extraction strategy
     %(prog)s --export state.json      Export full state to JSON
     %(prog)s --clear                  Clear all data (with confirm)
         """
@@ -668,7 +1020,7 @@ Examples:
     # Structure inspection commands
     parser.add_argument("--structures", action="store_true", help="List all tracked page structures")
     parser.add_argument("--structure", metavar="DOMAIN", help="Show structure for a domain")
-    parser.add_argument("--page-type", metavar="TYPE", default="unknown", help="Page type for structure commands (default: unknown)")
+    parser.add_argument("--page-type", metavar="TYPE", default=None, help="Page type for structure commands (auto-detected if not specified)")
     parser.add_argument("--structure-history", metavar="DOMAIN", help="Show structure version history")
     parser.add_argument("--compare", nargs=3, metavar=("DOMAIN", "V1", "V2"), help="Compare two structure versions")
     parser.add_argument("--strategy", metavar="DOMAIN", help="Show extraction strategy for domain")
