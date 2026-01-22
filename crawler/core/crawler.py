@@ -370,7 +370,12 @@ class Crawler:
                 await self._safe_callback(callback, url, result)
 
     async def _analyze_structure(self, url: str, html: str, domain: str) -> None:
-        """Analyze page structure for adaptive extraction."""
+        """
+        Analyze page structure for adaptive extraction with variant support.
+
+        Automatically detects structural variants within the same page type
+        (e.g., video articles vs text articles on a news site).
+        """
         if not self._structure_analyzer or not self._structure_store:
             return
 
@@ -379,47 +384,68 @@ class Crawler:
             page_type = self._classify_page_type(url)
             current_structure = self._structure_analyzer.analyze(html, url, page_type)
 
-            # Check for existing structure
-            stored_structure = await self._structure_store.get_structure(domain, page_type)
+            # Find matching variant or create new one
+            matching_variant, similarity = await self._structure_store.find_matching_variant(
+                current_structure
+            )
 
-            if stored_structure:
-                # Compare with stored structure
-                assert self._change_detector is not None
-                analysis = self._change_detector.detect_changes(stored_structure, current_structure)
+            if matching_variant:
+                # Found matching variant - check if it needs updating
+                stored_structure = await self._structure_store.get_structure(
+                    domain, page_type, matching_variant
+                )
 
-                if analysis.requires_relearning:
-                    # Structure changed significantly - adapt strategy
-                    assert self._strategy_learner is not None
-                    old_strategy = await self._structure_store.get_strategy(domain, page_type)
+                if stored_structure:
+                    # Compare with stored structure for this variant
+                    assert self._change_detector is not None
+                    analysis = self._change_detector.detect_changes(
+                        stored_structure, current_structure
+                    )
 
-                    if old_strategy:
-                        new_strategy = self._strategy_learner.adapt(
-                            old_strategy, current_structure, html
+                    if analysis.requires_relearning:
+                        # Structure changed significantly - adapt strategy
+                        assert self._strategy_learner is not None
+                        old_strategy = await self._structure_store.get_strategy(
+                            domain, page_type, matching_variant
                         )
-                        await self._structure_store.update(
-                            domain, page_type, current_structure,
-                            new_strategy.strategy,
-                            f"Structure changed: {analysis.classification.value}"
-                        )
-                        self._stats.structures_adapted += 1
-                        self.logger.info(
-                            "Adapted extraction strategy",
-                            domain=domain,
-                            page_type=page_type,
-                            similarity=analysis.similarity_score,
-                        )
+
+                        if old_strategy:
+                            new_strategy = self._strategy_learner.adapt(
+                                old_strategy, current_structure, html
+                            )
+                            current_structure.variant_id = matching_variant
+                            new_strategy.strategy.variant_id = matching_variant
+                            await self._structure_store.save_structure(
+                                current_structure, new_strategy.strategy, matching_variant
+                            )
+                            self._stats.structures_adapted += 1
+                            self.logger.info(
+                                "Adapted extraction strategy",
+                                domain=domain,
+                                page_type=page_type,
+                                variant_id=matching_variant,
+                                similarity=analysis.similarity_score,
+                            )
             else:
-                # New structure - learn strategy
+                # No matching variant - learn new strategy with variant detection
                 assert self._strategy_learner is not None
                 learned = self._strategy_learner.infer(html, current_structure)
-                await self._structure_store.save_structure(current_structure, learned.strategy)
-                self._stats.structures_learned += 1
-                self.logger.info(
-                    "Learned new extraction strategy",
-                    domain=domain,
-                    page_type=page_type,
-                    confidence=learned.confidence,
+
+                # Save with automatic variant detection
+                success, variant_id, is_new = await self._structure_store.save_with_variant_detection(
+                    current_structure, learned.strategy
                 )
+
+                if success:
+                    self._stats.structures_learned += 1
+                    self.logger.info(
+                        "Learned new extraction strategy",
+                        domain=domain,
+                        page_type=page_type,
+                        variant_id=variant_id,
+                        is_new_variant=is_new,
+                        confidence=learned.confidence,
+                    )
 
         except Exception as e:
             self.logger.debug("Structure analysis failed", url=url, error=str(e))

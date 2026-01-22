@@ -2,8 +2,11 @@
 Redis-based storage for page structures and extraction strategies.
 
 Provides persistent storage for adaptive extraction components.
+Supports variant tracking to handle multiple structural templates
+within the same page type (e.g., video articles vs text articles).
 """
 
+import hashlib
 import json
 from dataclasses import asdict
 from datetime import datetime
@@ -28,23 +31,39 @@ class StructureStore:
     Redis-based storage for page structures and extraction strategies.
 
     Stores structure fingerprints and learned extraction strategies
-    for each domain/page_type combination.
+    for each domain/page_type/variant combination.
+
+    Variant Tracking:
+        When multiple pages of the same type have different structures
+        (e.g., video articles vs text articles on a news site), each
+        distinct structure is stored as a separate variant.
+
+        Storage keys:
+        - crawler:structure:{domain}:{page_type}:{variant_id}
+        - crawler:strategy:{domain}:{page_type}:{variant_id}
+        - crawler:variants:{domain}:{page_type} -> set of variant_ids
     """
 
     # Redis key prefixes
     STRUCTURE_PREFIX = "crawler:structure:"
     STRATEGY_PREFIX = "crawler:strategy:"
     HISTORY_PREFIX = "crawler:structure_history:"
+    VARIANTS_PREFIX = "crawler:variants:"
     DOMAINS_KEY = "crawler:structure_domains"
 
     # Default TTL (7 days)
     DEFAULT_TTL = 604800
+
+    # Similarity threshold for matching variants (0-1)
+    # Structures with similarity >= this threshold are considered the same variant
+    VARIANT_SIMILARITY_THRESHOLD = 0.85
 
     def __init__(
         self,
         redis_client: redis.Redis,
         ttl: int = DEFAULT_TTL,
         logger: CrawlerLogger | None = None,
+        variant_similarity_threshold: float = VARIANT_SIMILARITY_THRESHOLD,
     ):
         """
         Initialize the structure store.
@@ -53,22 +72,339 @@ class StructureStore:
             redis_client: Redis async client.
             ttl: Time-to-live for stored structures in seconds.
             logger: Logger instance.
+            variant_similarity_threshold: Similarity threshold for variant matching.
         """
         self.redis = redis_client
         self.ttl = ttl
         self.logger = logger or CrawlerLogger("structure_store")
+        self.variant_similarity_threshold = variant_similarity_threshold
 
-    def _structure_key(self, domain: str, page_type: str) -> str:
+    def _structure_key(self, domain: str, page_type: str, variant_id: str = "default") -> str:
         """Get Redis key for a structure."""
-        return f"{self.STRUCTURE_PREFIX}{domain}:{page_type}"
+        return f"{self.STRUCTURE_PREFIX}{domain}:{page_type}:{variant_id}"
 
-    def _strategy_key(self, domain: str, page_type: str) -> str:
+    def _strategy_key(self, domain: str, page_type: str, variant_id: str = "default") -> str:
         """Get Redis key for a strategy."""
-        return f"{self.STRATEGY_PREFIX}{domain}:{page_type}"
+        return f"{self.STRATEGY_PREFIX}{domain}:{page_type}:{variant_id}"
 
-    def _history_key(self, domain: str, page_type: str) -> str:
+    def _history_key(self, domain: str, page_type: str, variant_id: str = "default") -> str:
         """Get Redis key for structure history."""
-        return f"{self.HISTORY_PREFIX}{domain}:{page_type}"
+        return f"{self.HISTORY_PREFIX}{domain}:{page_type}:{variant_id}"
+
+    def _variants_key(self, domain: str, page_type: str) -> str:
+        """Get Redis key for the set of variants."""
+        return f"{self.VARIANTS_PREFIX}{domain}:{page_type}"
+
+    # =========================================================================
+    # Variant Tracking Methods
+    # =========================================================================
+
+    def compute_structure_fingerprint(self, structure: PageStructure) -> str:
+        """
+        Compute a fingerprint for a structure based on key structural elements.
+
+        This fingerprint is used to generate variant IDs and for quick
+        similarity comparisons.
+
+        Args:
+            structure: PageStructure to fingerprint.
+
+        Returns:
+            A short hash string representing the structure's key features.
+        """
+        # Extract key structural features
+        tag_counts = structure.tag_hierarchy.get("tag_counts", {}) if structure.tag_hierarchy else {}
+
+        # Create a feature vector of important structural elements
+        features = [
+            # Key semantic tags (presence and rough counts)
+            f"article:{tag_counts.get('article', 0) > 0}",
+            f"video:{tag_counts.get('video', 0) > 0}",
+            f"iframe:{tag_counts.get('iframe', 0) > 0}",
+            f"table:{tag_counts.get('table', 0) > 0}",
+            f"form:{tag_counts.get('form', 0) > 0}",
+            f"nav:{min(tag_counts.get('nav', 0), 5)}",  # Cap at 5
+            # Content regions
+            f"regions:{len(structure.content_regions or [])}",
+            # Landmark presence
+            f"landmarks:{','.join(sorted(structure.semantic_landmarks.keys())[:5]) if structure.semantic_landmarks else 'none'}",
+            # Pagination
+            f"pagination:{bool(structure.pagination_pattern)}",
+            # Media richness
+            f"img:{min(tag_counts.get('img', 0) // 5, 10)}",  # Buckets of 5, max 10
+        ]
+
+        # Create hash from features
+        feature_str = "|".join(features)
+        return hashlib.md5(feature_str.encode()).hexdigest()[:12]
+
+    def compute_structure_similarity(
+        self,
+        struct1: PageStructure,
+        struct2: PageStructure,
+    ) -> float:
+        """
+        Compute similarity between two page structures.
+
+        Uses a weighted combination of structural features to determine
+        how similar two pages are.
+
+        Args:
+            struct1: First structure.
+            struct2: Second structure.
+
+        Returns:
+            Similarity score between 0.0 (completely different) and 1.0 (identical).
+        """
+        scores = []
+        weights = []
+
+        # Tag hierarchy similarity (most important)
+        tag_counts1 = struct1.tag_hierarchy.get("tag_counts", {}) if struct1.tag_hierarchy else {}
+        tag_counts2 = struct2.tag_hierarchy.get("tag_counts", {}) if struct2.tag_hierarchy else {}
+
+        if tag_counts1 or tag_counts2:
+            all_tags = set(tag_counts1.keys()) | set(tag_counts2.keys())
+            if all_tags:
+                # Jaccard-like similarity for tags
+                common_tags = set(tag_counts1.keys()) & set(tag_counts2.keys())
+                tag_sim = len(common_tags) / len(all_tags)
+                scores.append(tag_sim)
+                weights.append(0.3)
+
+                # Count similarity for common tags
+                if common_tags:
+                    count_diffs = []
+                    for tag in common_tags:
+                        c1, c2 = tag_counts1.get(tag, 0), tag_counts2.get(tag, 0)
+                        max_c = max(c1, c2)
+                        if max_c > 0:
+                            count_diffs.append(1 - abs(c1 - c2) / max_c)
+                    if count_diffs:
+                        scores.append(sum(count_diffs) / len(count_diffs))
+                        weights.append(0.2)
+
+        # Content regions similarity
+        regions1 = {r.name for r in (struct1.content_regions or [])}
+        regions2 = {r.name for r in (struct2.content_regions or [])}
+        if regions1 or regions2:
+            all_regions = regions1 | regions2
+            common_regions = regions1 & regions2
+            region_sim = len(common_regions) / len(all_regions) if all_regions else 1.0
+            scores.append(region_sim)
+            weights.append(0.2)
+
+        # Semantic landmarks similarity
+        landmarks1 = set(struct1.semantic_landmarks.keys()) if struct1.semantic_landmarks else set()
+        landmarks2 = set(struct2.semantic_landmarks.keys()) if struct2.semantic_landmarks else set()
+        if landmarks1 or landmarks2:
+            all_landmarks = landmarks1 | landmarks2
+            common_landmarks = landmarks1 & landmarks2
+            landmark_sim = len(common_landmarks) / len(all_landmarks) if all_landmarks else 1.0
+            scores.append(landmark_sim)
+            weights.append(0.15)
+
+        # Pagination pattern match
+        has_pagination1 = bool(struct1.pagination_pattern)
+        has_pagination2 = bool(struct2.pagination_pattern)
+        scores.append(1.0 if has_pagination1 == has_pagination2 else 0.5)
+        weights.append(0.05)
+
+        # Navigation complexity similarity
+        nav_count1 = len(struct1.navigation_selectors or [])
+        nav_count2 = len(struct2.navigation_selectors or [])
+        max_nav = max(nav_count1, nav_count2)
+        if max_nav > 0:
+            nav_sim = 1 - abs(nav_count1 - nav_count2) / max_nav
+            scores.append(nav_sim)
+            weights.append(0.1)
+
+        # Calculate weighted average
+        if not scores:
+            return 1.0  # No features to compare, assume same
+
+        total_weight = sum(weights)
+        return sum(s * w for s, w in zip(scores, weights)) / total_weight
+
+    async def find_matching_variant(
+        self,
+        structure: PageStructure,
+    ) -> tuple[str | None, float]:
+        """
+        Find an existing variant that matches the given structure.
+
+        Compares the structure against all existing variants for the same
+        domain/page_type and returns the best match if similarity exceeds
+        the threshold.
+
+        Args:
+            structure: Structure to find a match for.
+
+        Returns:
+            Tuple of (variant_id, similarity) or (None, 0.0) if no match.
+        """
+        domain = structure.domain
+        page_type = structure.page_type
+
+        variants = await self.get_all_variants(domain, page_type)
+
+        if not variants:
+            return None, 0.0
+
+        best_match = None
+        best_similarity = 0.0
+
+        for variant_id in variants:
+            existing = await self.get_structure(domain, page_type, variant_id)
+            if existing:
+                similarity = self.compute_structure_similarity(structure, existing)
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_match = variant_id
+
+        if best_similarity >= self.variant_similarity_threshold:
+            return best_match, best_similarity
+
+        return None, best_similarity
+
+    async def get_all_variants(
+        self,
+        domain: str,
+        page_type: str,
+    ) -> list[str]:
+        """
+        Get all variant IDs for a domain/page_type.
+
+        Args:
+            domain: Domain name.
+            page_type: Page type identifier.
+
+        Returns:
+            List of variant IDs.
+        """
+        variants_key = self._variants_key(domain, page_type)
+
+        try:
+            members = await self.redis.smembers(variants_key)
+            return [
+                m.decode() if isinstance(m, bytes) else m
+                for m in members
+            ]
+        except Exception as e:
+            self.logger.error(
+                "Failed to get variants",
+                domain=domain,
+                page_type=page_type,
+                error=str(e),
+            )
+            return []
+
+    async def save_with_variant_detection(
+        self,
+        structure: PageStructure,
+        strategy: ExtractionStrategy | None = None,
+    ) -> tuple[bool, str, bool]:
+        """
+        Save a structure with automatic variant detection.
+
+        If the structure matches an existing variant (based on similarity),
+        updates that variant. Otherwise, creates a new variant.
+
+        Args:
+            structure: PageStructure to save.
+            strategy: Optional associated extraction strategy.
+
+        Returns:
+            Tuple of (success, variant_id, is_new_variant).
+        """
+        domain = structure.domain
+        page_type = structure.page_type
+
+        # Check for matching variant
+        matching_variant, similarity = await self.find_matching_variant(structure)
+
+        if matching_variant:
+            # Update existing variant
+            variant_id = matching_variant
+            is_new = False
+            self.logger.debug(
+                "Matched existing variant",
+                domain=domain,
+                page_type=page_type,
+                variant_id=variant_id,
+                similarity=f"{similarity:.2%}",
+            )
+        else:
+            # Create new variant
+            variant_id = self.compute_structure_fingerprint(structure)
+            is_new = True
+            self.logger.info(
+                "Creating new variant",
+                domain=domain,
+                page_type=page_type,
+                variant_id=variant_id,
+            )
+
+        # Update structure and strategy with variant ID
+        structure.variant_id = variant_id
+        if strategy:
+            strategy.variant_id = variant_id
+
+        # Save structure
+        success = await self.save_structure(structure, strategy, variant_id)
+
+        if success:
+            # Track this variant
+            variants_key = self._variants_key(domain, page_type)
+            await self.redis.sadd(variants_key, variant_id)
+            await self.redis.expire(variants_key, self.ttl)
+
+        return success, variant_id, is_new
+
+    async def get_variant_stats(
+        self,
+        domain: str,
+        page_type: str,
+    ) -> dict[str, Any]:
+        """
+        Get statistics about variants for a domain/page_type.
+
+        Args:
+            domain: Domain name.
+            page_type: Page type identifier.
+
+        Returns:
+            Dictionary with variant statistics.
+        """
+        variants = await self.get_all_variants(domain, page_type)
+
+        variant_info = []
+        for variant_id in variants:
+            structure = await self.get_structure(domain, page_type, variant_id)
+            if structure:
+                tag_counts = structure.tag_hierarchy.get("tag_counts", {}) if structure.tag_hierarchy else {}
+                variant_info.append({
+                    "variant_id": variant_id,
+                    "url_pattern": structure.url_pattern,
+                    "captured_at": structure.captured_at.isoformat(),
+                    "version": structure.version,
+                    "total_elements": sum(tag_counts.values()),
+                    "has_video": tag_counts.get("video", 0) > 0,
+                    "has_iframe": tag_counts.get("iframe", 0) > 0,
+                    "has_table": tag_counts.get("table", 0) > 0,
+                    "content_regions": len(structure.content_regions or []),
+                })
+
+        return {
+            "domain": domain,
+            "page_type": page_type,
+            "variant_count": len(variants),
+            "variants": variant_info,
+        }
+
+    # =========================================================================
+    # Standard Get/Save Methods (with variant support)
+    # =========================================================================
 
     async def get(
         self,
@@ -93,18 +429,20 @@ class StructureStore:
         self,
         domain: str,
         page_type: str,
+        variant_id: str = "default",
     ) -> PageStructure | None:
         """
-        Get stored structure for a domain/page_type.
+        Get stored structure for a domain/page_type/variant.
 
         Args:
             domain: Domain name.
             page_type: Page type identifier.
+            variant_id: Variant identifier (default: "default").
 
         Returns:
             PageStructure or None if not found.
         """
-        key = self._structure_key(domain, page_type)
+        key = self._structure_key(domain, page_type, variant_id)
 
         try:
             data = await self.redis.get(key)
@@ -118,6 +456,7 @@ class StructureStore:
                 "Failed to get structure",
                 domain=domain,
                 page_type=page_type,
+                variant_id=variant_id,
                 error=str(e),
             )
             return None
@@ -147,6 +486,7 @@ class StructureStore:
         self,
         structure: PageStructure,
         strategy: ExtractionStrategy | None = None,
+        variant_id: str = "default",
     ) -> bool:
         """
         Save a page structure.
@@ -154,20 +494,22 @@ class StructureStore:
         Args:
             structure: PageStructure to save.
             strategy: Optional associated extraction strategy.
+            variant_id: Variant identifier (default: "default").
 
         Returns:
             True if saved successfully.
         """
-        structure_key = self._structure_key(structure.domain, structure.page_type)
+        structure_key = self._structure_key(structure.domain, structure.page_type, variant_id)
 
         try:
             # Serialize and save structure
             data = self._serialize_structure(structure)
+            data["variant_id"] = variant_id  # Store variant_id in the data
             await self.redis.setex(structure_key, self.ttl, json.dumps(data))
 
             # Save strategy if provided
             if strategy:
-                saved = await self.save_strategy(strategy)
+                saved = await self.save_strategy(strategy, variant_id)
                 if not saved:
                     self.logger.warning("Failed to save strategy with structure")
 
@@ -177,13 +519,19 @@ class StructureStore:
                 f"{structure.domain}:{structure.page_type}"
             )
 
+            # Track variant
+            variants_key = self._variants_key(structure.domain, structure.page_type)
+            await self.redis.sadd(variants_key, variant_id)
+            await self.redis.expire(variants_key, self.ttl)
+
             # Add to history
-            await self._add_to_history(structure)
+            await self._add_to_history(structure, variant_id)
 
             self.logger.debug(
                 "Saved structure",
                 domain=structure.domain,
                 page_type=structure.page_type,
+                variant_id=variant_id,
             )
             return True
 
@@ -257,6 +605,7 @@ class StructureStore:
         self,
         domain: str,
         page_type: str,
+        variant_id: str = "default",
     ) -> ExtractionStrategy | None:
         """
         Get stored extraction strategy.
@@ -264,11 +613,12 @@ class StructureStore:
         Args:
             domain: Domain name.
             page_type: Page type identifier.
+            variant_id: Variant identifier (default: "default").
 
         Returns:
             ExtractionStrategy or None if not found.
         """
-        key = self._strategy_key(domain, page_type)
+        key = self._strategy_key(domain, page_type, variant_id)
 
         try:
             data = await self.redis.get(key)
@@ -282,6 +632,7 @@ class StructureStore:
                 "Failed to get strategy",
                 domain=domain,
                 page_type=page_type,
+                variant_id=variant_id,
                 error=str(e),
             )
             return None
@@ -289,17 +640,19 @@ class StructureStore:
     async def save_strategy(
         self,
         strategy: ExtractionStrategy,
+        variant_id: str = "default",
     ) -> bool:
         """
         Save an extraction strategy.
 
         Args:
             strategy: Strategy to save.
+            variant_id: Variant identifier (default: "default").
 
         Returns:
             True if saved successfully.
         """
-        key = self._strategy_key(strategy.domain, strategy.page_type)
+        key = self._strategy_key(strategy.domain, strategy.page_type, variant_id)
 
         try:
             data = self._serialize_strategy(strategy)
@@ -386,10 +739,15 @@ class StructureStore:
                 return structure
         return None
 
-    async def _add_to_history(self, structure: PageStructure) -> None:
+    async def _add_to_history(
+        self,
+        structure: PageStructure,
+        variant_id: str = "default",
+    ) -> None:
         """Add structure to history."""
-        key = self._history_key(structure.domain, structure.page_type)
+        key = self._history_key(structure.domain, structure.page_type, variant_id)
         data = self._serialize_structure(structure)
+        data["variant_id"] = variant_id
         timestamp = structure.captured_at.timestamp()
 
         # Add to sorted set with timestamp as score
