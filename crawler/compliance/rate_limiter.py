@@ -89,28 +89,30 @@ class RateLimiter:
         Returns:
             The number of seconds waited.
         """
-        lock = self._get_lock(domain)
-        state = self._get_state(domain)
+        # Acquire global semaphore to limit total concurrent requests
+        async with self._global_semaphore:
+            lock = self._get_lock(domain)
+            state = self._get_state(domain)
 
-        async with lock:
-            # Calculate required delay
-            delay = self._calculate_delay(state)
-            time_since_last = time.monotonic() - state.last_request_time
-            wait_time = max(0, delay - time_since_last)
+            async with lock:
+                # Calculate required delay
+                delay = self._calculate_delay(state)
+                time_since_last = time.monotonic() - state.last_request_time
+                wait_time = max(0, delay - time_since_last)
 
-            if wait_time > 0:
-                self.logger.rate_limit_wait(
-                    domain=domain,
-                    delay_seconds=wait_time,
-                    reason="rate_limit",
-                )
-                await asyncio.sleep(wait_time)
+                if wait_time > 0:
+                    self.logger.rate_limit_wait(
+                        domain=domain,
+                        delay_seconds=wait_time,
+                        reason="rate_limit",
+                    )
+                    await asyncio.sleep(wait_time)
 
-            # Update state
-            state.last_request_time = time.monotonic()
-            state.total_requests += 1
+                # Update state
+                state.last_request_time = time.monotonic()
+                state.total_requests += 1
 
-            return wait_time
+                return wait_time
 
     def _calculate_delay(self, state: DomainState) -> float:
         """Calculate the required delay for a domain."""
@@ -120,9 +122,10 @@ class RateLimiter:
         else:
             base_delay = state.current_delay
 
-        # Apply backoff for consecutive errors
+        # Apply backoff for consecutive errors (capped at 5 to prevent extreme delays)
         if state.consecutive_errors > 0:
-            backoff = self.config.backoff_multiplier ** state.consecutive_errors
+            capped_errors = min(state.consecutive_errors, 5)
+            backoff = self.config.backoff_multiplier ** capped_errors
             delay = min(base_delay * backoff, self.config.max_delay)
         else:
             delay = base_delay
