@@ -309,30 +309,49 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
     """
     LLM-based description generator.
 
-    Uses an LLM (OpenAI or Anthropic) to generate rich, semantic descriptions
-    that capture nuances rules might miss.
+    Uses an LLM to generate rich, semantic descriptions that capture nuances
+    rules might miss.
 
-    Requires API key:
-    - OPENAI_API_KEY for OpenAI models
-    - ANTHROPIC_API_KEY for Claude models
+    Supported providers:
+    - openai: OpenAI API (requires OPENAI_API_KEY)
+    - anthropic: Anthropic API (requires ANTHROPIC_API_KEY)
+    - ollama: Local Ollama instance (default: http://localhost:11434)
+    - ollama-cloud: Ollama cloud service (requires OLLAMA_API_KEY)
     """
+
+    # Default models for each provider
+    DEFAULT_MODELS = {
+        "openai": "gpt-4o-mini",
+        "anthropic": "claude-3-haiku-20240307",
+        "ollama": "llama3.2",
+        "ollama-cloud": "llama3.2",
+    }
+
+    # Default Ollama endpoints
+    OLLAMA_LOCAL_URL = "http://localhost:11434"
+    OLLAMA_CLOUD_URL = "https://api.ollama.com"
 
     def __init__(
         self,
-        provider: Literal["openai", "anthropic"] = "openai",
+        provider: Literal["openai", "anthropic", "ollama", "ollama-cloud"] = "openai",
         model: str | None = None,
+        ollama_base_url: str | None = None,
     ):
         """
         Initialize LLM description generator.
 
         Args:
-            provider: "openai" or "anthropic"
-            model: Model name (defaults to gpt-4o-mini or claude-3-haiku)
+            provider: LLM provider to use:
+                - "openai": OpenAI API
+                - "anthropic": Anthropic API
+                - "ollama": Local Ollama instance
+                - "ollama-cloud": Ollama cloud service
+            model: Model name (defaults based on provider)
+            ollama_base_url: Custom Ollama base URL (for local or self-hosted)
         """
         self.provider = provider
-        self.model = model or (
-            "gpt-4o-mini" if provider == "openai" else "claude-3-haiku-20240307"
-        )
+        self.model = model or self.DEFAULT_MODELS.get(provider, "gpt-4o-mini")
+        self.ollama_base_url = ollama_base_url
         self._client = None
 
     def _get_client(self):
@@ -360,7 +379,63 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
             except ImportError:
                 raise ImportError("anthropic package required: pip install anthropic")
 
+        elif self.provider == "ollama":
+            # Local Ollama - no API key needed
+            try:
+                import httpx
+                base_url = self.ollama_base_url or os.environ.get(
+                    "OLLAMA_BASE_URL", self.OLLAMA_LOCAL_URL
+                )
+                self._client = {"base_url": base_url, "httpx": httpx}
+            except ImportError:
+                raise ImportError("httpx package required: pip install httpx")
+
+        elif self.provider == "ollama-cloud":
+            # Ollama cloud - requires API key
+            try:
+                import httpx
+                api_key = os.environ.get("OLLAMA_API_KEY")
+                if not api_key:
+                    raise ValueError("OLLAMA_API_KEY environment variable required for ollama-cloud")
+                base_url = self.ollama_base_url or os.environ.get(
+                    "OLLAMA_CLOUD_URL", self.OLLAMA_CLOUD_URL
+                )
+                self._client = {"base_url": base_url, "api_key": api_key, "httpx": httpx}
+            except ImportError:
+                raise ImportError("httpx package required: pip install httpx")
+
         return self._client
+
+    def _call_ollama(self, prompt: str, max_tokens: int = 200) -> str:
+        """Make a request to Ollama API (local or cloud)."""
+        client = self._get_client()
+        httpx = client["httpx"]
+        base_url = client["base_url"]
+
+        headers = {"Content-Type": "application/json"}
+        if "api_key" in client:
+            headers["Authorization"] = f"Bearer {client['api_key']}"
+
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "num_predict": max_tokens,
+                "temperature": 0.3,
+            },
+        }
+
+        response = httpx.post(
+            f"{base_url}/api/generate",
+            json=payload,
+            headers=headers,
+            timeout=60.0,
+        )
+        response.raise_for_status()
+
+        result = response.json()
+        return result.get("response", "").strip()
 
     def _structure_to_json(self, structure: PageStructure) -> str:
         """Convert structure to JSON for LLM context."""
@@ -417,13 +492,19 @@ Generate a 2-3 sentence description that captures the essence of this page struc
             )
             return response.choices[0].message.content.strip()
 
-        else:  # anthropic
+        elif self.provider == "anthropic":
             response = client.messages.create(
                 model=self.model,
                 max_tokens=200,
                 messages=[{"role": "user", "content": prompt}],
             )
             return response.content[0].text.strip()
+
+        elif self.provider in ("ollama", "ollama-cloud"):
+            return self._call_ollama(prompt, max_tokens=200)
+
+        else:
+            raise ValueError(f"Unknown provider: {self.provider}")
 
     def generate_for_change_detection(
         self,
@@ -461,13 +542,19 @@ Generate a 2-3 sentence description of the key changes and their potential impac
             )
             return response.choices[0].message.content.strip()
 
-        else:  # anthropic
+        elif self.provider == "anthropic":
             response = client.messages.create(
                 model=self.model,
                 max_tokens=300,
                 messages=[{"role": "user", "content": prompt}],
             )
             return response.content[0].text.strip()
+
+        elif self.provider in ("ollama", "ollama-cloud"):
+            return self._call_ollama(prompt, max_tokens=300)
+
+        else:
+            raise ValueError(f"Unknown provider: {self.provider}")
 
 
 def get_description_generator(
@@ -479,7 +566,10 @@ def get_description_generator(
 
     Args:
         mode: "rules" for deterministic, "llm" for LLM-based
-        **kwargs: Additional arguments for LLM generator (provider, model)
+        **kwargs: Additional arguments for LLM generator:
+            - provider: "openai", "anthropic", "ollama", or "ollama-cloud"
+            - model: Model name (optional, uses provider default)
+            - ollama_base_url: Custom Ollama URL (for local/self-hosted)
 
     Returns:
         BaseDescriptionGenerator instance
@@ -493,6 +583,15 @@ def get_description_generator(
 
         # LLM-based with Anthropic
         gen = get_description_generator("llm", provider="anthropic", model="claude-3-sonnet-20240229")
+
+        # LLM-based with local Ollama
+        gen = get_description_generator("llm", provider="ollama", model="llama3.2")
+
+        # LLM-based with custom Ollama URL
+        gen = get_description_generator("llm", provider="ollama", ollama_base_url="http://192.168.1.100:11434")
+
+        # LLM-based with Ollama cloud
+        gen = get_description_generator("llm", provider="ollama-cloud", model="llama3.2")
     """
     if isinstance(mode, str):
         mode = DescriptionMode(mode)

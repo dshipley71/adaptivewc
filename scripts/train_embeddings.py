@@ -8,7 +8,7 @@ This script demonstrates how to:
 3. Find similar page structures
 4. Train a page type classifier (LogisticRegression, XGBoost, or LightGBM)
 5. Detect changes using ML-based change detection
-6. Generate descriptions using rules or LLM
+6. Generate descriptions using rules or LLM (OpenAI, Anthropic, Ollama)
 
 Usage:
     # Export training data from Redis
@@ -28,18 +28,30 @@ Usage:
 
     # Set baseline and detect changes
     python scripts/train_embeddings.py set-baseline example.com
-    python scripts/train_embeddings.py detect-change example.com
+    python scripts/train_embeddings.py detect-drift example.com
 
     # Generate descriptions with rules or LLM
     python scripts/train_embeddings.py describe example.com --mode rules
     python scripts/train_embeddings.py describe example.com --mode llm --provider openai
+    python scripts/train_embeddings.py describe example.com --mode llm --provider anthropic
+    python scripts/train_embeddings.py describe example.com --mode llm --provider ollama
+    python scripts/train_embeddings.py describe example.com --mode llm --provider ollama --llm-model llama3.2
+    python scripts/train_embeddings.py describe example.com --mode llm --provider ollama --ollama-url http://192.168.1.100:11434
+    python scripts/train_embeddings.py describe example.com --mode llm --provider ollama-cloud
 
 Requirements:
     pip install sentence-transformers scikit-learn
 
-    For XGBoost:    pip install xgboost
-    For LightGBM:   pip install lightgbm  (already in main deps)
-    For LLM mode:   pip install openai anthropic
+    For XGBoost:      pip install xgboost
+    For LightGBM:     pip install lightgbm  (already in main deps)
+    For LLM mode:     pip install openai anthropic  (for OpenAI/Anthropic)
+    For Ollama:       No extra deps (uses httpx, already in main deps)
+
+Environment Variables:
+    OPENAI_API_KEY     - Required for --provider openai
+    ANTHROPIC_API_KEY  - Required for --provider anthropic
+    OLLAMA_BASE_URL    - Custom Ollama URL (default: http://localhost:11434)
+    OLLAMA_API_KEY     - Required for --provider ollama-cloud
 """
 
 import argparse
@@ -321,11 +333,15 @@ async def cmd_describe(args, structure_store: StructureStore):
     print(f"Generating description using {mode.value} mode...")
 
     if mode == DescriptionMode.LLM:
-        generator = get_description_generator(
-            mode,
-            provider=args.provider,
-            model=args.llm_model,
-        )
+        kwargs = {
+            "provider": args.provider,
+            "model": args.llm_model,
+        }
+        # Add ollama_base_url if specified
+        if hasattr(args, "ollama_url") and args.ollama_url:
+            kwargs["ollama_base_url"] = args.ollama_url
+        generator = get_description_generator(mode, **kwargs)
+        print(f"Using provider: {args.provider}" + (f" (model: {args.llm_model})" if args.llm_model else ""))
     else:
         generator = get_description_generator(mode)
 
@@ -500,14 +516,19 @@ async def main():
     )
     describe_parser.add_argument(
         "--provider",
-        choices=["openai", "anthropic"],
+        choices=["openai", "anthropic", "ollama", "ollama-cloud"],
         default="openai",
         help="LLM provider for llm mode (default: openai)",
     )
     describe_parser.add_argument(
         "--llm-model",
         default=None,
-        help="LLM model name (default: gpt-4o-mini or claude-3-haiku)",
+        help="LLM model name (default: provider-specific, e.g., gpt-4o-mini, llama3.2)",
+    )
+    describe_parser.add_argument(
+        "--ollama-url",
+        default=None,
+        help="Custom Ollama base URL (default: http://localhost:11434 for local)",
     )
 
     # Set baseline command
@@ -535,9 +556,14 @@ async def main():
     )
     compare_parser.add_argument(
         "--provider",
-        choices=["openai", "anthropic"],
+        choices=["openai", "anthropic", "ollama", "ollama-cloud"],
         default="openai",
         help="LLM provider for llm mode (default: openai)",
+    )
+    compare_parser.add_argument(
+        "--ollama-url",
+        default=None,
+        help="Custom Ollama base URL (default: http://localhost:11434 for local)",
     )
 
     args = parser.parse_args()
@@ -564,10 +590,11 @@ async def main():
         # Get description mode if available
         mode = getattr(args, "mode", "rules")
         if mode == "llm":
-            desc_gen = get_description_generator(
-                DescriptionMode.LLM,
-                provider=getattr(args, "provider", "openai"),
-            )
+            kwargs = {"provider": getattr(args, "provider", "openai")}
+            # Add ollama_base_url if specified
+            if hasattr(args, "ollama_url") and args.ollama_url:
+                kwargs["ollama_base_url"] = args.ollama_url
+            desc_gen = get_description_generator(DescriptionMode.LLM, **kwargs)
         else:
             desc_gen = get_description_generator(DescriptionMode.RULES)
 
