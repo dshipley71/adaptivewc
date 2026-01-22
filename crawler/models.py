@@ -176,7 +176,13 @@ class PaginationInfo:
 
 @dataclass
 class PageStructure:
-    """Fingerprint of a page's DOM structure."""
+    """
+    Fingerprint of a page's DOM structure.
+
+    Supports variant tracking: multiple structural variants can exist
+    for the same domain/page_type combination (e.g., video articles
+    vs text articles on a news site).
+    """
 
     domain: str
     page_type: str
@@ -196,6 +202,9 @@ class PageStructure:
     captured_at: datetime = field(default_factory=datetime.utcnow)
     version: int = 1
     content_hash: str = ""
+
+    # Variant tracking: identifies structural variants within the same page_type
+    variant_id: str = "default"
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -232,6 +241,7 @@ class PageStructure:
             "captured_at": self.captured_at.isoformat(),
             "version": self.version,
             "content_hash": self.content_hash,
+            "variant_id": self.variant_id,
         }
 
 
@@ -275,6 +285,9 @@ class ExtractionStrategy:
     learned_at: datetime = field(default_factory=datetime.utcnow)
     learning_source: str = "initial"  # "initial", "adaptation", "manual"
     confidence_scores: dict[str, float] = field(default_factory=dict)
+
+    # Variant tracking: identifies structural variants within the same page_type
+    variant_id: str = "default"
 
 
 # =============================================================================

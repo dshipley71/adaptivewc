@@ -17,6 +17,7 @@ Usage:
     python scripts/inspect_index.py --structures             # List tracked page structures
     python scripts/inspect_index.py --structure example.com  # Show structure for domain
     python scripts/inspect_index.py --strategy example.com   # Show extraction strategy
+    python scripts/inspect_index.py --variants example.com   # List structural variants for domain
     python scripts/inspect_index.py --export output.json     # Export full state
     python scripts/inspect_index.py --clear                  # Clear all data (with confirmation)
 """
@@ -61,6 +62,8 @@ class StructureDescriptionGenerator:
         # Header
         lines.append(f"Website Structure Analysis for {structure.domain}")
         lines.append(f"Page Type: {structure.page_type}")
+        variant_display = structure.variant_id if hasattr(structure, 'variant_id') else "default"
+        lines.append(f"Variant: {variant_display}")
         lines.append(f"URL Pattern: {structure.url_pattern or 'N/A'}")
         lines.append(f"Analyzed: {structure.captured_at}")
         lines.append(f"Version: {structure.version}")
@@ -178,6 +181,8 @@ class StrategyDescriptionGenerator:
         # Header
         lines.append(f"Extraction Strategy for {strategy.domain}")
         lines.append(f"Page Type: {strategy.page_type}")
+        variant_display = strategy.variant_id if hasattr(strategy, 'variant_id') else "default"
+        lines.append(f"Variant: {variant_display}")
         lines.append(f"Version: {strategy.version}")
         lines.append(f"Learned: {strategy.learned_at}")
         lines.append(f"Source: {strategy.learning_source}")
@@ -288,6 +293,17 @@ class CrawlerInspector:
         print(f"    Total Structures:    {structure_stats.get('total_structures', 0)}")
         print(f"    Total Strategies:    {structure_stats.get('total_strategies', 0)}")
         print(f"    TTL (seconds):       {structure_stats.get('ttl_seconds', 'N/A')}")
+
+        # Variant statistics
+        variant_stats = await self.structure_store.get_variant_stats()
+        if variant_stats.get("total_variants", 0) > 0:
+            print("\n  Structural Variants:")
+            print(f"    Total Variants:      {variant_stats.get('total_variants', 0)}")
+            print(f"    Domains w/ Variants: {variant_stats.get('domains_with_variants', 0)}")
+            if variant_stats.get("variants_by_domain"):
+                print("    Breakdown:")
+                for key, count in list(variant_stats["variants_by_domain"].items())[:5]:
+                    print(f"      {key}: {count} variants")
 
         # Per-domain queue sizes
         if stats.get('domains'):
@@ -482,18 +498,32 @@ class CrawlerInspector:
             if robots:
                 state["robots_cache"][domain] = robots.to_dict()
 
-        # Add structures and strategies
+        # Add structures and strategies (including all variants)
         state["structures"] = {}
         state["strategies"] = {}
         domains = await self.structure_store.list_domains()
         for domain, page_type in domains:
-            structure = await self.structure_store.get_structure(domain, page_type)
-            strategy = await self.structure_store.get_strategy(domain, page_type)
-            key = f"{domain}:{page_type}"
-            if structure:
-                state["structures"][key] = self._structure_to_export_dict(structure)
-            if strategy:
-                state["strategies"][key] = self._strategy_to_export_dict(strategy)
+            # Get all variants for this domain/page_type
+            variants = await self.structure_store.get_all_variants(domain, page_type)
+
+            if variants:
+                for variant_id in variants:
+                    structure = await self.structure_store.get_structure(domain, page_type, variant_id)
+                    strategy = await self.structure_store.get_strategy(domain, page_type, variant_id)
+                    key = f"{domain}:{page_type}:{variant_id}"
+                    if structure:
+                        state["structures"][key] = self._structure_to_export_dict(structure)
+                    if strategy:
+                        state["strategies"][key] = self._strategy_to_export_dict(strategy)
+            else:
+                # Fallback for structures without variant tracking
+                structure = await self.structure_store.get_structure(domain, page_type)
+                strategy = await self.structure_store.get_strategy(domain, page_type)
+                key = f"{domain}:{page_type}"
+                if structure:
+                    state["structures"][key] = self._structure_to_export_dict(structure)
+                if strategy:
+                    state["strategies"][key] = self._strategy_to_export_dict(strategy)
 
         state["exported_at"] = datetime.utcnow().isoformat()
 
@@ -514,6 +544,7 @@ class CrawlerInspector:
         return {
             "domain": structure.domain,
             "page_type": structure.page_type,
+            "variant_id": getattr(structure, "variant_id", "default"),
             "url_pattern": structure.url_pattern,
             "captured_at": structure.captured_at.isoformat() if structure.captured_at else None,
             "version": structure.version,
@@ -565,6 +596,7 @@ class CrawlerInspector:
         return {
             "domain": strategy.domain,
             "page_type": strategy.page_type,
+            "variant_id": getattr(strategy, "variant_id", "default"),
             "version": strategy.version,
             "learned_at": strategy.learned_at.isoformat() if strategy.learned_at else None,
             "learning_source": strategy.learning_source,
@@ -651,36 +683,138 @@ class CrawlerInspector:
         print(f"TRACKED PAGE STRUCTURES ({len(domains)} total)")
         print(f"{'='*60}\n")
 
-        for domain, page_type in domains[:limit]:
-            structure = await self.structure_store.get_structure(domain, page_type)
-            strategy = await self.structure_store.get_strategy(domain, page_type)
-            if structure:
-                print(f"  [STRUCT] {domain} [{page_type}]")
-                print(f"      Version: {structure.version} | Captured: {structure.captured_at}")
-                print(f"      Content Hash: {structure.content_hash[:32]}..." if structure.content_hash else "      Content Hash: N/A")
+        count = 0
+        for domain, page_type in domains:
+            if count >= limit:
+                break
 
-                # Show structure summary
-                tag_counts = structure.tag_hierarchy.get("tag_counts", {}) if structure.tag_hierarchy else {}
-                if tag_counts:
-                    total_elements = sum(tag_counts.values())
-                    print(f"      DOM Elements: {total_elements} | Unique Tags: {len(tag_counts)}")
+            # Get all variants for this domain/page_type
+            variants = await self.structure_store.get_all_variants(domain, page_type)
 
-                if structure.content_regions:
-                    print(f"      Content Regions: {len(structure.content_regions)}")
+            if variants:
+                for variant_id in variants:
+                    if count >= limit:
+                        break
+                    structure = await self.structure_store.get_structure(domain, page_type, variant_id)
+                    strategy = await self.structure_store.get_strategy(domain, page_type, variant_id)
+                    if structure:
+                        variant_display = f" (variant: {variant_id})" if variant_id != "default" else ""
+                        print(f"  [STRUCT] {domain} [{page_type}]{variant_display}")
+                        print(f"      Version: {structure.version} | Captured: {structure.captured_at}")
+                        print(f"      Content Hash: {structure.content_hash[:32]}..." if structure.content_hash else "      Content Hash: N/A")
 
-                if strategy:
-                    print(f"      Strategy: v{strategy.version} ({strategy.learning_source})")
+                        # Show structure summary
+                        tag_counts = structure.tag_hierarchy.get("tag_counts", {}) if structure.tag_hierarchy else {}
+                        if tag_counts:
+                            total_elements = sum(tag_counts.values())
+                            print(f"      DOM Elements: {total_elements} | Unique Tags: {len(tag_counts)}")
+
+                        if structure.content_regions:
+                            print(f"      Content Regions: {len(structure.content_regions)}")
+
+                        if strategy:
+                            print(f"      Strategy: v{strategy.version} ({strategy.learning_source})")
+                    else:
+                        print(f"  [STRUCT] {domain} [{page_type}] (no data)")
+                    print()
+                    count += 1
             else:
-                print(f"  [STRUCT] {domain} [{page_type}] (no data)")
-            print()
+                # Fallback for structures without variant tracking
+                structure = await self.structure_store.get_structure(domain, page_type)
+                strategy = await self.structure_store.get_strategy(domain, page_type)
+                if structure:
+                    print(f"  [STRUCT] {domain} [{page_type}]")
+                    print(f"      Version: {structure.version} | Captured: {structure.captured_at}")
+                    print(f"      Content Hash: {structure.content_hash[:32]}..." if structure.content_hash else "      Content Hash: N/A")
+
+                    tag_counts = structure.tag_hierarchy.get("tag_counts", {}) if structure.tag_hierarchy else {}
+                    if tag_counts:
+                        total_elements = sum(tag_counts.values())
+                        print(f"      DOM Elements: {total_elements} | Unique Tags: {len(tag_counts)}")
+
+                    if structure.content_regions:
+                        print(f"      Content Regions: {len(structure.content_regions)}")
+
+                    if strategy:
+                        print(f"      Strategy: v{strategy.version} ({strategy.learning_source})")
+                else:
+                    print(f"  [STRUCT] {domain} [{page_type}] (no data)")
+                print()
+                count += 1
 
         if len(domains) > limit:
             print(f"  ... and {len(domains) - limit} more")
 
         return domains[:limit]
 
-    async def show_structure(self, domain: str, page_type: str | None = None) -> dict | None:
-        """Show detailed structure for a domain/page_type."""
+    async def list_variants(self, domain: str, page_type: str | None = None) -> list[str]:
+        """List all structural variants for a domain/page_type."""
+        # Auto-detect page_type if not specified
+        if page_type is None or page_type == "unknown":
+            page_type = await self._get_default_page_type(domain)
+            if page_type is None:
+                print(f"\n{'='*60}")
+                print(f"STRUCTURAL VARIANTS: {domain}")
+                print(f"{'='*60}\n")
+                print(f"  X No structures found for domain: {domain}")
+                return []
+
+        variants = await self.structure_store.get_all_variants(domain, page_type)
+
+        print(f"\n{'='*60}")
+        print(f"STRUCTURAL VARIANTS: {domain} [{page_type}]")
+        print(f"{'='*60}\n")
+
+        if not variants:
+            print(f"  No variants found (only default structure)")
+            # Check if there's a default structure
+            structure = await self.structure_store.get_structure(domain, page_type)
+            if structure:
+                print(f"\n  Default Structure:")
+                print(f"    Version: {structure.version}")
+                print(f"    Captured: {structure.captured_at}")
+            return ["default"] if structure else []
+
+        print(f"  Found {len(variants)} variant(s):\n")
+
+        for variant_id in variants:
+            structure = await self.structure_store.get_structure(domain, page_type, variant_id)
+            if structure:
+                print(f"  [{variant_id}]")
+                print(f"      Version: {structure.version}")
+                print(f"      Captured: {structure.captured_at}")
+                print(f"      Content Hash: {structure.content_hash[:24]}..." if structure.content_hash else "      Content Hash: N/A")
+
+                # Show key differentiating features
+                tag_counts = structure.tag_hierarchy.get("tag_counts", {}) if structure.tag_hierarchy else {}
+                features = []
+                if tag_counts.get("video", 0) > 0:
+                    features.append("video content")
+                if tag_counts.get("iframe", 0) > 0:
+                    features.append(f"{tag_counts['iframe']} iframe(s)")
+                if tag_counts.get("article", 0) > 0:
+                    features.append("article layout")
+                if tag_counts.get("table", 0) > 0:
+                    features.append("tabular data")
+
+                if features:
+                    print(f"      Features: {', '.join(features)}")
+
+                # Show content regions count
+                if structure.content_regions:
+                    print(f"      Content Regions: {len(structure.content_regions)}")
+
+                # Check for strategy
+                strategy = await self.structure_store.get_strategy(domain, page_type, variant_id)
+                if strategy:
+                    print(f"      Strategy: v{strategy.version} ({strategy.learning_source})")
+
+                print()
+
+        return variants
+
+    async def show_structure(self, domain: str, page_type: str | None = None, variant_id: str | None = None) -> dict | None:
+        """Show detailed structure for a domain/page_type/variant."""
         # Auto-detect page_type if not specified
         if page_type is None or page_type == "unknown":
             page_type = await self._get_default_page_type(domain)
@@ -691,10 +825,15 @@ class CrawlerInspector:
                 print(f"  X No structures found for domain: {domain}")
                 return None
 
-        structure = await self.structure_store.get_structure(domain, page_type)
+        # Use default variant if not specified
+        if variant_id is None:
+            variant_id = "default"
 
+        structure = await self.structure_store.get_structure(domain, page_type, variant_id)
+
+        variant_display = f" (variant: {variant_id})" if variant_id != "default" else ""
         print(f"\n{'='*60}")
-        print(f"PAGE STRUCTURE: {domain} [{page_type}]")
+        print(f"PAGE STRUCTURE: {domain} [{page_type}]{variant_display}")
         print(f"{'='*60}\n")
 
         if structure is None:
@@ -704,6 +843,15 @@ class CrawlerInspector:
 
             if matching:
                 print(f"  X No structure for page_type '{page_type}'")
+                # Also check for variants
+                if variant_id != "default":
+                    variants = await self.structure_store.get_all_variants(domain, page_type)
+                    if variants:
+                        print(f"  Available variants for {domain} [{page_type}]:")
+                        for v in variants:
+                            print(f"    - {v}")
+                    else:
+                        print(f"  Tip: Try without --variant to use default structure")
                 print(f"  Available page types for {domain}:")
                 for d, pt in matching:
                     print(f"    - {pt}")
@@ -810,8 +958,8 @@ class CrawlerInspector:
 
         return self._structure_to_export_dict(structure)
 
-    async def show_strategy(self, domain: str, page_type: str | None = None) -> dict | None:
-        """Show extraction strategy for a domain/page_type."""
+    async def show_strategy(self, domain: str, page_type: str | None = None, variant_id: str | None = None) -> dict | None:
+        """Show extraction strategy for a domain/page_type/variant."""
         # Auto-detect page_type if not specified
         if page_type is None or page_type == "unknown":
             page_type = await self._get_default_page_type(domain)
@@ -822,10 +970,15 @@ class CrawlerInspector:
                 print(f"  X No strategies found for domain: {domain}")
                 return None
 
-        strategy = await self.structure_store.get_strategy(domain, page_type)
+        # Use default variant if not specified
+        if variant_id is None:
+            variant_id = "default"
 
+        strategy = await self.structure_store.get_strategy(domain, page_type, variant_id)
+
+        variant_display = f" (variant: {variant_id})" if variant_id != "default" else ""
         print(f"\n{'='*60}")
-        print(f"EXTRACTION STRATEGY: {domain} [{page_type}]")
+        print(f"EXTRACTION STRATEGY: {domain} [{page_type}]{variant_display}")
         print(f"{'='*60}\n")
 
         if strategy is None:
@@ -835,6 +988,15 @@ class CrawlerInspector:
 
             if matching:
                 print(f"  X No strategy for page_type '{page_type}'")
+                # Also check for variants
+                if variant_id != "default":
+                    variants = await self.structure_store.get_all_variants(domain, page_type)
+                    if variants:
+                        print(f"  Available variants for {domain} [{page_type}]:")
+                        for v in variants:
+                            print(f"    - {v}")
+                    else:
+                        print(f"  Tip: Try without --variant to use default strategy")
                 print(f"  Available page types for {domain}:")
                 for d, pt in matching:
                     print(f"    - {pt}")
@@ -999,7 +1161,9 @@ Examples:
     %(prog)s --structures             List all tracked page structures
     %(prog)s --structure example.com  Show structure for domain (auto-detects page type)
     %(prog)s --structure example.com --page-type article  Show specific page type
+    %(prog)s --structure example.com --variant abc123  Show specific variant
     %(prog)s --strategy example.com   Show extraction strategy for domain
+    %(prog)s --variants example.com   List all structural variants for domain
     %(prog)s --structure-history example.com  Show structure versions
     %(prog)s --compare example.com 1 2  Compare structure versions
     %(prog)s --export state.json      Export full state to JSON
@@ -1021,6 +1185,8 @@ Examples:
     parser.add_argument("--structures", action="store_true", help="List all tracked page structures")
     parser.add_argument("--structure", metavar="DOMAIN", help="Show structure for a domain")
     parser.add_argument("--page-type", metavar="TYPE", default=None, help="Page type for structure commands (auto-detected if not specified)")
+    parser.add_argument("--variant", metavar="ID", default=None, help="Variant ID for structure/strategy commands (default: 'default')")
+    parser.add_argument("--variants", metavar="DOMAIN", help="List all structural variants for a domain")
     parser.add_argument("--structure-history", metavar="DOMAIN", help="Show structure version history")
     parser.add_argument("--compare", nargs=3, metavar=("DOMAIN", "V1", "V2"), help="Compare two structure versions")
     parser.add_argument("--strategy", metavar="DOMAIN", help="Show extraction strategy for domain")
@@ -1068,15 +1234,17 @@ Examples:
             await inspector.peek_next(args.next)
         elif args.structures:
             await inspector.list_structures(args.limit)
+        elif args.variants:
+            await inspector.list_variants(args.variants, args.page_type)
         elif args.structure:
-            await inspector.show_structure(args.structure, args.page_type)
+            await inspector.show_structure(args.structure, args.page_type, args.variant)
         elif args.structure_history:
             await inspector.show_structure_history(args.structure_history, args.page_type, args.limit)
         elif args.compare:
             domain, v1, v2 = args.compare
             await inspector.compare_structures(domain, args.page_type, int(v1), int(v2))
         elif args.strategy:
-            await inspector.show_strategy(args.strategy, args.page_type)
+            await inspector.show_strategy(args.strategy, args.page_type, args.variant)
         elif args.domains:
             await inspector.list_domains(args.limit)
         elif args.stats:
