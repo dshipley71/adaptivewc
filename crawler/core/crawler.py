@@ -426,6 +426,23 @@ class Crawler:
                                 variant_id=matching_variant,
                                 similarity=analysis.similarity_score,
                             )
+                else:
+                    # Variant exists but structure is missing (expired/deleted)
+                    # Re-learn and save for this variant
+                    self.logger.warning(
+                        "Orphan variant found, re-learning structure",
+                        domain=domain,
+                        page_type=page_type,
+                        variant_id=matching_variant,
+                    )
+                    assert self._strategy_learner is not None
+                    learned = self._strategy_learner.infer(html, current_structure)
+                    current_structure.variant_id = matching_variant
+                    learned.strategy.variant_id = matching_variant
+                    await self._structure_store.save_structure(
+                        current_structure, learned.strategy, matching_variant
+                    )
+                    self._stats.structures_learned += 1
             else:
                 # No matching variant - learn new strategy with variant detection
                 assert self._strategy_learner is not None
@@ -446,9 +463,16 @@ class Crawler:
                         is_new_variant=is_new,
                         confidence=learned.confidence,
                     )
+                else:
+                    self.logger.error(
+                        "Failed to save structure",
+                        domain=domain,
+                        page_type=page_type,
+                        url=url,
+                    )
 
         except Exception as e:
-            self.logger.debug("Structure analysis failed", url=url, error=str(e))
+            self.logger.warning("Structure analysis failed", url=url, error=str(e))
 
     def _classify_page_type(self, url: str) -> str:
         """Classify the page type from URL patterns."""
