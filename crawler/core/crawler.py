@@ -25,7 +25,7 @@ from crawler.legal.pii_detector import PIIDetector
 from crawler.models import FetchResult, FetchStatus
 from crawler.storage.robots_cache import RobotsCache
 from crawler.storage.url_store import URLStore, URLEntry
-from crawler.storage.structure_store import StructureStore
+from crawler.storage.factory import create_structure_store, AnyStructureStore
 from crawler.adaptive.structure_analyzer import StructureAnalyzer
 from crawler.utils.logging import CrawlerLogger, setup_logging
 from crawler.utils import metrics
@@ -100,7 +100,7 @@ class Crawler:
         self._scheduler: Scheduler | None = None
         self._link_extractor: LinkExtractor | None = None
         self._structure_analyzer: StructureAnalyzer | None = None
-        self._structure_store: StructureStore | None = None
+        self._structure_store: AnyStructureStore | None = None
 
         # State
         self._running = False
@@ -195,8 +195,9 @@ class Crawler:
 
         # Initialize structure analyzer and store
         self._structure_analyzer = StructureAnalyzer(logger=self.logger)
-        self._structure_store = StructureStore(
+        self._structure_store = create_structure_store(
             redis_client=self._redis,
+            config=self.config.structure_store,
             logger=self.logger,
         )
 
