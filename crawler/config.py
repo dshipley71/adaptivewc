@@ -31,6 +31,21 @@ class LawfulBasis(str, Enum):
     LEGAL_OBLIGATION = "legal_obligation"
 
 
+class StructureStoreType(str, Enum):
+    """Type of structure store to use."""
+
+    BASIC = "basic"          # Rule-based SemanticDescriptionGenerator
+    LLM = "llm"              # LLM-powered descriptions
+
+
+class LLMProviderType(str, Enum):
+    """LLM provider for structure descriptions."""
+
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
+    OLLAMA = "ollama"
+
+
 class CrawlerSettings(BaseSettings):
     """Main settings loaded from environment variables."""
 
@@ -64,6 +79,17 @@ class CrawlerSettings(BaseSettings):
     enable_adaptive: bool = True
     structure_ttl: int = 604800  # 7 days
     change_threshold: float = 0.3
+
+    # Structure store configuration
+    structure_store_type: StructureStoreType = StructureStoreType.BASIC
+    structure_store_embeddings: bool = False
+    structure_store_embedding_model: str = "all-MiniLM-L6-v2"
+    
+    # LLM provider configuration (only used when structure_store_type = "llm")
+    llm_provider: LLMProviderType = LLMProviderType.ANTHROPIC
+    llm_model: str = ""  # Empty = use provider default
+    llm_api_key: str = ""  # Empty = use environment variable
+    ollama_base_url: str = "http://localhost:11434"
 
     # Safety limits
     max_page_size_mb: float = 10.0
@@ -221,6 +247,23 @@ class AlertConfig:
 
 
 @dataclass
+class StructureStoreConfig:
+    """Configuration for structure storage and change detection."""
+
+    store_type: StructureStoreType = StructureStoreType.BASIC
+    enable_embeddings: bool = False
+    embedding_model: str = "all-MiniLM-L6-v2"
+    ttl_seconds: int = 604800  # 7 days
+    max_versions: int = 10
+    
+    # LLM settings (only used when store_type = LLM)
+    llm_provider: LLMProviderType = LLMProviderType.ANTHROPIC
+    llm_model: str = ""  # Empty = use provider default
+    llm_api_key: str = ""  # Empty = use environment variable
+    ollama_base_url: str = "http://localhost:11434"
+
+
+@dataclass
 class CrawlConfig:
     """Complete crawl job configuration."""
 
@@ -241,6 +284,7 @@ class CrawlConfig:
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     politeness: PolitenessConfig = field(default_factory=PolitenessConfig)
     alerts: AlertConfig = field(default_factory=AlertConfig)
+    structure_store: StructureStoreConfig = field(default_factory=StructureStoreConfig)
 
 
 def load_config() -> CrawlerSettings:
