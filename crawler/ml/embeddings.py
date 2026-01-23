@@ -419,26 +419,45 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
         if "api_key" in client:
             headers["Authorization"] = f"Bearer {client['api_key']}"
 
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "num_predict": max_tokens,
+        # Ollama Cloud uses OpenAI-compatible API format
+        if self.provider == "ollama-cloud":
+            payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
                 "temperature": 0.3,
-            },
-        }
-
-        response = httpx.post(
-            f"{base_url}/api/generate",
-            json=payload,
-            headers=headers,
-            timeout=60.0,
-        )
-        response.raise_for_status()
-
-        result = response.json()
-        return result.get("response", "").strip()
+            }
+            endpoint = f"{base_url}/chat/completions"
+            response = httpx.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result["choices"][0]["message"]["content"].strip()
+        else:
+            # Local Ollama uses native API format
+            payload = {
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_predict": max_tokens,
+                    "temperature": 0.3,
+                },
+            }
+            endpoint = f"{base_url}/api/generate"
+            response = httpx.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result.get("response", "").strip()
 
     def _structure_to_json(self, structure: PageStructure) -> str:
         """Convert structure to JSON for LLM context."""
