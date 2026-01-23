@@ -374,40 +374,79 @@ async def cmd_describe(args, structure_store: StructureStore):
 
 
 async def cmd_set_baseline(args, structure_store: StructureStore, detector: MLChangeDetector):
-    """Set baseline for a domain."""
+    """Set baseline for a domain (stored in Redis)."""
     structure = await get_structure_for_domain(structure_store, args.domain, args.page_type)
     if structure is None:
         print(f"No structure found for {args.domain}")
         return
 
-    detector.set_site_baseline(structure.domain, structure)
+    # Compute embedding
+    print(f"Computing embedding for {structure.domain} [{structure.page_type}]...")
+    embedding = detector.model.encode(structure)
 
-    # Save detector state
-    output = args.detector_state or "detector_state.pkl"
-    detector.save(output)
+    # Get variant ID
+    variants = await structure_store.get_all_variants(structure.domain, structure.page_type)
+    variant_id = variants[0] if variants else "default"
 
-    print(f"Baseline set for {structure.domain} [{structure.page_type}]")
-    print(f"Detector state saved to: {output}")
+    # Save to Redis
+    success = await structure_store.save_baseline(
+        domain=structure.domain,
+        embedding=embedding.tolist(),
+        page_type=structure.page_type,
+        model_name=args.model,
+        structure_version=structure.version,
+        variant_id=variant_id,
+    )
+
+    if success:
+        print(f"Baseline saved to Redis for {structure.domain} [{structure.page_type}]")
+        print(f"  Model: {args.model}")
+        print(f"  Embedding dim: {len(embedding)}")
+        print(f"  Variant: {variant_id}")
+    else:
+        print(f"Failed to save baseline for {structure.domain}")
 
 
 async def cmd_detect_drift(args, structure_store: StructureStore, detector: MLChangeDetector):
-    """Detect drift from baseline for a domain."""
+    """Detect drift from baseline for a domain (loads baseline from Redis)."""
     structure = await get_structure_for_domain(structure_store, args.domain, args.page_type)
     if structure is None:
         print(f"No structure found for {args.domain}")
         return
 
-    result = detector.detect_drift_from_baseline(structure)
+    # Load baseline from Redis
+    baseline_embedding, baseline_meta = await structure_store.get_baseline(
+        structure.domain,
+        structure.page_type,
+    )
 
-    if result is None:
-        print(f"No baseline found for {structure.domain}. Run set-baseline first.")
+    if baseline_embedding is None:
+        print(f"No baseline found for {structure.domain} [{structure.page_type}].")
+        print("Run 'set-baseline' first to create a baseline.")
         return
 
-    print(f"\nDrift Analysis for {structure.domain}:")
+    # Compute current embedding
+    import numpy as np
+    current_embedding = detector.model.encode(structure)
+    baseline_arr = np.array(baseline_embedding)
+
+    # Compute similarity
+    similarity = float(np.dot(current_embedding, baseline_arr) / (
+        np.linalg.norm(current_embedding) * np.linalg.norm(baseline_arr)
+    ))
+
+    is_drifted = similarity < detector.drift_threshold
+
+    print(f"\nDrift Analysis for {structure.domain} [{structure.page_type}]:")
     print("=" * 60)
-    print(f"  Similarity to baseline: {result['similarity_to_baseline']:.2%}")
-    print(f"  Is drifted: {result['is_drifted']}")
-    print(f"  Baseline created: {result['baseline_created']}")
+    print(f"  Similarity to baseline: {similarity:.2%}")
+    print(f"  Drift threshold: {detector.drift_threshold:.2%}")
+    print(f"  Is drifted: {is_drifted}")
+    print(f"\nBaseline Info:")
+    print(f"  Created: {baseline_meta.get('created_at', 'unknown')}")
+    print(f"  Model: {baseline_meta.get('model_name', 'unknown')}")
+    print(f"  Structure version: {baseline_meta.get('structure_version', 'unknown')}")
+    print(f"  Variant: {baseline_meta.get('variant_id', 'default')}")
 
 
 async def cmd_compare(args, structure_store: StructureStore, detector: MLChangeDetector):
@@ -436,6 +475,142 @@ async def cmd_compare(args, structure_store: StructureStore, detector: MLChangeD
 
     print("\nChange Description:")
     print(result['change_description'])
+
+
+async def cmd_set_all_baselines(args, structure_store: StructureStore, detector: MLChangeDetector):
+    """Create baselines for all domains in Redis."""
+    print(f"Creating baselines for all domains using {args.model}...")
+
+    domains = await structure_store.list_domains()
+    if not domains:
+        print("No structures found in Redis.")
+        return
+
+    success_count = 0
+    fail_count = 0
+
+    for domain, page_type in domains:
+        # Get variants
+        variants = await structure_store.get_all_variants(domain, page_type)
+        variant_id = variants[0] if variants else "default"
+
+        structure = await structure_store.get_structure(domain, page_type, variant_id)
+        if structure:
+            try:
+                embedding = detector.model.encode(structure)
+                success = await structure_store.save_baseline(
+                    domain=domain,
+                    embedding=embedding.tolist(),
+                    page_type=page_type,
+                    model_name=args.model,
+                    structure_version=structure.version,
+                    variant_id=variant_id,
+                )
+                if success:
+                    success_count += 1
+                    print(f"  + {domain} [{page_type}]")
+                else:
+                    fail_count += 1
+                    print(f"  X {domain} [{page_type}] (save failed)")
+            except Exception as e:
+                fail_count += 1
+                print(f"  X {domain} [{page_type}] ({e})")
+
+    print(f"\nBaselines created: {success_count}")
+    print(f"Failed: {fail_count}")
+
+
+async def cmd_list_baselines(args, structure_store: StructureStore):
+    """List all baselines stored in Redis."""
+    baselines = await structure_store.list_baselines()
+
+    if not baselines:
+        print("No baselines found in Redis.")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"STORED BASELINES ({len(baselines)} total)")
+    print(f"{'='*60}\n")
+
+    for b in baselines:
+        domain = b.get("domain", "unknown")
+        page_type = b.get("page_type", "unknown")
+        created = b.get("created_at", "unknown")
+        model = b.get("model_name", "unknown")
+        version = b.get("structure_version", "?")
+        variant = b.get("variant_id", "default")
+        dim = b.get("embedding_dim", "?")
+
+        print(f"  [{domain}] {page_type}")
+        print(f"      Created: {created}")
+        print(f"      Model: {model} (dim: {dim})")
+        print(f"      Structure v{version}, variant: {variant}")
+        print()
+
+    # Show stats
+    stats = await structure_store.get_baseline_stats()
+    print("Summary:")
+    print(f"  Total baselines: {stats.get('total_baselines', 0)}")
+    print(f"  Unique domains: {stats.get('unique_domains', 0)}")
+    if stats.get("by_model"):
+        print(f"  By model: {stats['by_model']}")
+
+
+async def cmd_check_all_drift(args, structure_store: StructureStore, detector: MLChangeDetector):
+    """Check drift for all domains with baselines."""
+    import numpy as np
+
+    baselines = await structure_store.list_baselines()
+    if not baselines:
+        print("No baselines found. Run 'set-all-baselines' first.")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"DRIFT CHECK FOR {len(baselines)} DOMAINS")
+    print(f"{'='*60}\n")
+
+    drifted_count = 0
+    ok_count = 0
+    error_count = 0
+
+    for b in baselines:
+        domain = b.get("domain")
+        page_type = b.get("page_type", "homepage")
+
+        # Get current structure
+        structure = await get_structure_for_domain(structure_store, domain, page_type)
+        if not structure:
+            print(f"  ? {domain} [{page_type}] - no current structure")
+            error_count += 1
+            continue
+
+        # Load baseline
+        baseline_embedding, _ = await structure_store.get_baseline(domain, page_type)
+        if not baseline_embedding:
+            print(f"  ? {domain} [{page_type}] - no baseline")
+            error_count += 1
+            continue
+
+        # Compute similarity
+        current_embedding = detector.model.encode(structure)
+        baseline_arr = np.array(baseline_embedding)
+        similarity = float(np.dot(current_embedding, baseline_arr) / (
+            np.linalg.norm(current_embedding) * np.linalg.norm(baseline_arr)
+        ))
+
+        is_drifted = similarity < detector.drift_threshold
+
+        if is_drifted:
+            print(f"  ! {domain} [{page_type}] - DRIFTED ({similarity:.1%})")
+            drifted_count += 1
+        else:
+            print(f"  + {domain} [{page_type}] - OK ({similarity:.1%})")
+            ok_count += 1
+
+    print(f"\nResults:")
+    print(f"  OK: {ok_count}")
+    print(f"  Drifted: {drifted_count}")
+    print(f"  Errors: {error_count}")
 
 
 async def main():
@@ -521,17 +696,24 @@ async def main():
         help="Custom Ollama base URL (default: http://localhost:11434 for local)",
     )
 
-    # Set baseline command
-    baseline_parser = subparsers.add_parser("set-baseline", help="Set baseline for change detection")
+    # Set baseline command (saves to Redis)
+    baseline_parser = subparsers.add_parser("set-baseline", help="Set baseline for a domain (stored in Redis)")
     baseline_parser.add_argument("domain", help="Domain to set as baseline")
     baseline_parser.add_argument("--page-type", default=None)
-    baseline_parser.add_argument("--detector-state", default="detector_state.pkl")
 
-    # Detect drift command
-    drift_parser = subparsers.add_parser("detect-drift", help="Detect drift from baseline")
+    # Set all baselines command
+    all_baselines_parser = subparsers.add_parser("set-all-baselines", help="Create baselines for all domains")
+
+    # List baselines command
+    list_baselines_parser = subparsers.add_parser("list-baselines", help="List all baselines in Redis")
+
+    # Detect drift command (loads from Redis)
+    drift_parser = subparsers.add_parser("detect-drift", help="Detect drift from baseline (loaded from Redis)")
     drift_parser.add_argument("domain", help="Domain to check for drift")
     drift_parser.add_argument("--page-type", default=None)
-    drift_parser.add_argument("--detector-state", default="detector_state.pkl")
+
+    # Check all drift command
+    check_all_parser = subparsers.add_parser("check-all-drift", help="Check drift for all domains with baselines")
 
     # Compare command
     compare_parser = subparsers.add_parser("compare", help="Compare two structures")
@@ -574,7 +756,8 @@ async def main():
 
     # Create ML change detector for relevant commands
     detector = None
-    if args.command in ("set-baseline", "detect-drift", "compare"):
+    ml_commands = ("set-baseline", "detect-drift", "compare", "set-all-baselines", "check-all-drift")
+    if args.command in ml_commands:
         model = StructureEmbeddingModel(model_name=args.model)
 
         # Get description mode if available
@@ -593,15 +776,6 @@ async def main():
             description_generator=desc_gen,
         )
 
-        # Load existing state if available
-        if args.command in ("detect-drift", "compare"):
-            state_path = getattr(args, "detector_state", "detector_state.pkl")
-            try:
-                detector.load(state_path)
-                print(f"Loaded detector state from {state_path}")
-            except FileNotFoundError:
-                pass
-
     try:
         if args.command == "export":
             await cmd_export(args, structure_store)
@@ -619,8 +793,14 @@ async def main():
             await cmd_describe(args, structure_store)
         elif args.command == "set-baseline":
             await cmd_set_baseline(args, structure_store, detector)
+        elif args.command == "set-all-baselines":
+            await cmd_set_all_baselines(args, structure_store, detector)
+        elif args.command == "list-baselines":
+            await cmd_list_baselines(args, structure_store)
         elif args.command == "detect-drift":
             await cmd_detect_drift(args, structure_store, detector)
+        elif args.command == "check-all-drift":
+            await cmd_check_all_drift(args, structure_store, detector)
         elif args.command == "compare":
             await cmd_compare(args, structure_store, detector)
     finally:
