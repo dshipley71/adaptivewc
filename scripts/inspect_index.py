@@ -825,9 +825,14 @@ class CrawlerInspector:
                 print(f"  X No structures found for domain: {domain}")
                 return None
 
-        # Use default variant if not specified
+        # Auto-detect variant if not specified
         if variant_id is None:
-            variant_id = "default"
+            # Check for available variants first
+            variants = await self.structure_store.get_all_variants(domain, page_type)
+            if variants:
+                variant_id = variants[0]  # Use first available variant
+            else:
+                variant_id = "default"
 
         structure = await self.structure_store.get_structure(domain, page_type, variant_id)
 
@@ -970,9 +975,14 @@ class CrawlerInspector:
                 print(f"  X No strategies found for domain: {domain}")
                 return None
 
-        # Use default variant if not specified
+        # Auto-detect variant if not specified
         if variant_id is None:
-            variant_id = "default"
+            # Check for available variants first
+            variants = await self.structure_store.get_all_variants(domain, page_type)
+            if variants:
+                variant_id = variants[0]  # Use first available variant
+            else:
+                variant_id = "default"
 
         strategy = await self.structure_store.get_strategy(domain, page_type, variant_id)
 

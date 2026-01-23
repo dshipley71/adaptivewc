@@ -71,7 +71,13 @@ console = Console()
     "-p",
     type=int,
     default=None,
-    help="Maximum pages to crawl (default: unlimited).",
+    help="Maximum total pages to crawl across all domains (default: unlimited).",
+)
+@click.option(
+    "--max-pages-per-domain",
+    type=int,
+    default=None,
+    help="Maximum pages to crawl per domain (default: unlimited).",
 )
 @click.option(
     "--allowed-domains",
@@ -139,6 +145,7 @@ def main(
     rate_limit: float,
     max_depth: int,
     max_pages: int | None,
+    max_pages_per_domain: int | None,
     allowed_domains: tuple[str, ...],
     user_agent: str,
     respect_robots: bool,
@@ -166,7 +173,9 @@ def main(
     console.print(f"Rate limit: {rate_limit} req/s")
     console.print(f"Max depth: {max_depth}")
     if max_pages:
-        console.print(f"Max pages: {max_pages}")
+        console.print(f"Max pages (total): {max_pages}")
+    if max_pages_per_domain:
+        console.print(f"Max pages per domain: {max_pages_per_domain}")
     if allowed_domains:
         console.print(f"Allowed domains: {', '.join(allowed_domains)}")
 
@@ -201,6 +210,7 @@ def main(
         output_dir=output,
         max_depth=max_depth,
         max_pages=max_pages,
+        max_pages_per_domain=max_pages_per_domain,
         allowed_domains=list(allowed_domains) if allowed_domains else [],
         rate_limit=RateLimitConfig(
             default_delay=1.0 / rate_limit,
