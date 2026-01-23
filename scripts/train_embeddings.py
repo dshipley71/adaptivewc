@@ -88,14 +88,51 @@ async def get_all_structures(structure_store: StructureStore):
     strategies = []
 
     for domain, page_type in domains:
-        structure = await structure_store.get_structure(domain, page_type)
-        strategy = await structure_store.get_strategy(domain, page_type)
+        # Check for variants first
+        variants = await structure_store.get_all_variants(domain, page_type)
 
-        if structure:
-            structures.append(structure)
-            strategies.append(strategy)
+        if variants:
+            for variant_id in variants:
+                structure = await structure_store.get_structure(domain, page_type, variant_id)
+                strategy = await structure_store.get_strategy(domain, page_type, variant_id)
+                if structure:
+                    structures.append(structure)
+                    strategies.append(strategy)
+        else:
+            # Fallback to default variant
+            structure = await structure_store.get_structure(domain, page_type)
+            strategy = await structure_store.get_strategy(domain, page_type)
+            if structure:
+                structures.append(structure)
+                strategies.append(strategy)
 
     return structures, strategies
+
+
+async def get_structure_for_domain(structure_store: StructureStore, domain: str, page_type: str | None = None):
+    """Get a structure for a domain, handling variant lookup."""
+    pt = page_type or "homepage"
+
+    # Check for variants first
+    variants = await structure_store.get_all_variants(domain, pt)
+    if variants:
+        return await structure_store.get_structure(domain, pt, variants[0])
+
+    # Try default variant
+    structure = await structure_store.get_structure(domain, pt)
+    if structure:
+        return structure
+
+    # Try to find any page type for this domain
+    domains = await structure_store.list_domains()
+    for d, found_pt in domains:
+        if d == domain:
+            variants = await structure_store.get_all_variants(d, found_pt)
+            if variants:
+                return await structure_store.get_structure(d, found_pt, variants[0])
+            return await structure_store.get_structure(d, found_pt)
+
+    return None
 
 
 async def cmd_export(args, structure_store: StructureStore):
@@ -261,15 +298,7 @@ async def cmd_predict(args, structure_store: StructureStore):
         print("Specify --classifier path to load trained model.")
         return
 
-    structure = await structure_store.get_structure(args.domain, args.page_type or "homepage")
-    if structure is None:
-        # Try to find any page type
-        domains = await structure_store.list_domains()
-        for d, pt in domains:
-            if d == args.domain:
-                structure = await structure_store.get_structure(d, pt)
-                break
-
+    structure = await get_structure_for_domain(structure_store, args.domain, args.page_type)
     if structure is None:
         print(f"No structure found for {args.domain}")
         return
@@ -316,15 +345,7 @@ async def cmd_similarity_pairs(args, structure_store: StructureStore):
 
 async def cmd_describe(args, structure_store: StructureStore):
     """Generate description of a structure."""
-    structure = await structure_store.get_structure(args.domain, args.page_type or "homepage")
-    if structure is None:
-        # Try to find any page type
-        domains = await structure_store.list_domains()
-        for d, pt in domains:
-            if d == args.domain:
-                structure = await structure_store.get_structure(d, pt)
-                break
-
+    structure = await get_structure_for_domain(structure_store, args.domain, args.page_type)
     if structure is None:
         print(f"No structure found for {args.domain}")
         return
@@ -354,15 +375,7 @@ async def cmd_describe(args, structure_store: StructureStore):
 
 async def cmd_set_baseline(args, structure_store: StructureStore, detector: MLChangeDetector):
     """Set baseline for a domain."""
-    structure = await structure_store.get_structure(args.domain, args.page_type or "homepage")
-    if structure is None:
-        # Try to find any page type
-        domains = await structure_store.list_domains()
-        for d, pt in domains:
-            if d == args.domain:
-                structure = await structure_store.get_structure(d, pt)
-                break
-
+    structure = await get_structure_for_domain(structure_store, args.domain, args.page_type)
     if structure is None:
         print(f"No structure found for {args.domain}")
         return
@@ -379,15 +392,7 @@ async def cmd_set_baseline(args, structure_store: StructureStore, detector: MLCh
 
 async def cmd_detect_drift(args, structure_store: StructureStore, detector: MLChangeDetector):
     """Detect drift from baseline for a domain."""
-    structure = await structure_store.get_structure(args.domain, args.page_type or "homepage")
-    if structure is None:
-        # Try to find any page type
-        domains = await structure_store.list_domains()
-        for d, pt in domains:
-            if d == args.domain:
-                structure = await structure_store.get_structure(d, pt)
-                break
-
+    structure = await get_structure_for_domain(structure_store, args.domain, args.page_type)
     if structure is None:
         print(f"No structure found for {args.domain}")
         return
@@ -408,23 +413,8 @@ async def cmd_detect_drift(args, structure_store: StructureStore, detector: MLCh
 async def cmd_compare(args, structure_store: StructureStore, detector: MLChangeDetector):
     """Compare two structures using ML change detection."""
     # Get both structures
-    old_structure = await structure_store.get_structure(args.domain1, args.page_type or "homepage")
-    new_structure = await structure_store.get_structure(args.domain2, args.page_type or "homepage")
-
-    # Try to find structures if not found
-    if old_structure is None:
-        domains = await structure_store.list_domains()
-        for d, pt in domains:
-            if d == args.domain1:
-                old_structure = await structure_store.get_structure(d, pt)
-                break
-
-    if new_structure is None:
-        domains = await structure_store.list_domains()
-        for d, pt in domains:
-            if d == args.domain2:
-                new_structure = await structure_store.get_structure(d, pt)
-                break
+    old_structure = await get_structure_for_domain(structure_store, args.domain1, args.page_type)
+    new_structure = await get_structure_for_domain(structure_store, args.domain2, args.page_type)
 
     if old_structure is None:
         print(f"No structure found for {args.domain1}")
