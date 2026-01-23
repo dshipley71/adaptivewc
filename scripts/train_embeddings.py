@@ -382,7 +382,8 @@ async def cmd_set_baseline(args, structure_store: StructureStore, detector: MLCh
 
     # Compute embedding
     print(f"Computing embedding for {structure.domain} [{structure.page_type}]...")
-    embedding = detector.model.encode(structure)
+    embedding_obj = detector.embedding_model.embed_structure(structure)
+    embedding = embedding_obj.embedding
 
     # Get variant ID
     variants = await structure_store.get_all_variants(structure.domain, structure.page_type)
@@ -391,7 +392,7 @@ async def cmd_set_baseline(args, structure_store: StructureStore, detector: MLCh
     # Save to Redis
     success = await structure_store.save_baseline(
         domain=structure.domain,
-        embedding=embedding.tolist(),
+        embedding=embedding,
         page_type=structure.page_type,
         model_name=args.model,
         structure_version=structure.version,
@@ -427,7 +428,8 @@ async def cmd_detect_drift(args, structure_store: StructureStore, detector: MLCh
 
     # Compute current embedding
     import numpy as np
-    current_embedding = detector.model.encode(structure)
+    embedding_obj = detector.embedding_model.embed_structure(structure)
+    current_embedding = np.array(embedding_obj.embedding)
     baseline_arr = np.array(baseline_embedding)
 
     # Compute similarity
@@ -497,10 +499,11 @@ async def cmd_set_all_baselines(args, structure_store: StructureStore, detector:
         structure = await structure_store.get_structure(domain, page_type, variant_id)
         if structure:
             try:
-                embedding = detector.model.encode(structure)
+                embedding_obj = detector.embedding_model.embed_structure(structure)
+                embedding = embedding_obj.embedding
                 success = await structure_store.save_baseline(
                     domain=domain,
-                    embedding=embedding.tolist(),
+                    embedding=embedding,
                     page_type=page_type,
                     model_name=args.model,
                     structure_version=structure.version,
@@ -592,7 +595,8 @@ async def cmd_check_all_drift(args, structure_store: StructureStore, detector: M
             continue
 
         # Compute similarity
-        current_embedding = detector.model.encode(structure)
+        embedding_obj = detector.embedding_model.embed_structure(structure)
+        current_embedding = np.array(embedding_obj.embedding)
         baseline_arr = np.array(baseline_embedding)
         similarity = float(np.dot(current_embedding, baseline_arr) / (
             np.linalg.norm(current_embedding) * np.linalg.norm(baseline_arr)
