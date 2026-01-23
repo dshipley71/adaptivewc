@@ -466,7 +466,7 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
             "page_type": structure.page_type,
             "tag_hierarchy": structure.tag_hierarchy,
             "content_regions": [
-                {"name": r.name, "selector": r.selector}
+                {"name": r.name, "selector": r.primary_selector}
                 for r in (structure.content_regions or [])
             ],
             "navigation_count": len(structure.navigation_selectors or []),
