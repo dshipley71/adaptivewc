@@ -272,6 +272,7 @@ class CrawlConfig:
     output_dir: str
     max_depth: int = 10
     max_pages: int | None = None
+    max_pages_per_domain: int | None = None
     allowed_domains: list[str] = field(default_factory=list)
     exclude_patterns: list[str] = field(default_factory=list)
 

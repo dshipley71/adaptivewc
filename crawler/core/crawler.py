@@ -205,6 +205,7 @@ class Crawler:
             config=SchedulerConfig(
                 max_depth=self.config.max_depth,
                 max_pages=self.config.max_pages,
+                max_pages_per_domain=self.config.max_pages_per_domain,
                 allowed_domains=self.config.allowed_domains,
             ),
             logger=self.logger,
