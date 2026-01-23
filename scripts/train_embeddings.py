@@ -437,12 +437,12 @@ async def cmd_detect_drift(args, structure_store: StructureStore, detector: MLCh
         np.linalg.norm(current_embedding) * np.linalg.norm(baseline_arr)
     ))
 
-    is_drifted = similarity < detector.drift_threshold
+    is_drifted = similarity < detector.breaking_threshold
 
     print(f"\nDrift Analysis for {structure.domain} [{structure.page_type}]:")
     print("=" * 60)
     print(f"  Similarity to baseline: {similarity:.2%}")
-    print(f"  Drift threshold: {detector.drift_threshold:.2%}")
+    print(f"  Breaking threshold: {detector.breaking_threshold:.2%}")
     print(f"  Is drifted: {is_drifted}")
     print(f"\nBaseline Info:")
     print(f"  Created: {baseline_meta.get('created_at', 'unknown')}")
@@ -602,7 +602,7 @@ async def cmd_check_all_drift(args, structure_store: StructureStore, detector: M
             np.linalg.norm(current_embedding) * np.linalg.norm(baseline_arr)
         ))
 
-        is_drifted = similarity < detector.drift_threshold
+        is_drifted = similarity < detector.breaking_threshold
 
         if is_drifted:
             print(f"  ! {domain} [{page_type}] - DRIFTED ({similarity:.1%})")
