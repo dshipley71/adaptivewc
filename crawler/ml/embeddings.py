@@ -329,13 +329,14 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
 
     # Default Ollama endpoints
     OLLAMA_LOCAL_URL = "http://localhost:11434"
-    OLLAMA_CLOUD_URL = "https://api.ollama.com"
+    OLLAMA_CLOUD_URL = "https://ollama.com/v1"
 
     def __init__(
         self,
         provider: Literal["openai", "anthropic", "ollama", "ollama-cloud"] = "openai",
         model: str | None = None,
         ollama_base_url: str | None = None,
+        api_key: str | None = None,
     ):
         """
         Initialize LLM description generator.
@@ -348,10 +349,12 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
                 - "ollama-cloud": Ollama cloud service
             model: Model name (defaults based on provider)
             ollama_base_url: Custom Ollama base URL (for local or self-hosted)
+            api_key: API key for the provider (falls back to environment variable)
         """
         self.provider = provider
         self.model = model or self.DEFAULT_MODELS.get(provider, "gpt-4o-mini")
         self.ollama_base_url = ollama_base_url
+        self.api_key = api_key
         self._client = None
 
     def _get_client(self):
@@ -394,9 +397,9 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
             # Ollama cloud - requires API key
             try:
                 import httpx
-                api_key = os.environ.get("OLLAMA_API_KEY")
+                api_key = self.api_key or os.environ.get("OLLAMA_API_KEY")
                 if not api_key:
-                    raise ValueError("OLLAMA_API_KEY environment variable required for ollama-cloud")
+                    raise ValueError("OLLAMA_API_KEY environment variable or --ollama-api-key required for ollama-cloud")
                 base_url = self.ollama_base_url or os.environ.get(
                     "OLLAMA_CLOUD_URL", self.OLLAMA_CLOUD_URL
                 )
@@ -570,6 +573,7 @@ def get_description_generator(
             - provider: "openai", "anthropic", "ollama", or "ollama-cloud"
             - model: Model name (optional, uses provider default)
             - ollama_base_url: Custom Ollama URL (for local/self-hosted)
+            - api_key: API key for the provider (falls back to environment variable)
 
     Returns:
         BaseDescriptionGenerator instance
@@ -590,8 +594,8 @@ def get_description_generator(
         # LLM-based with custom Ollama URL
         gen = get_description_generator("llm", provider="ollama", ollama_base_url="http://192.168.1.100:11434")
 
-        # LLM-based with Ollama cloud
-        gen = get_description_generator("llm", provider="ollama-cloud", model="llama3.2")
+        # LLM-based with Ollama cloud (API key via CLI)
+        gen = get_description_generator("llm", provider="ollama-cloud", model="llama3.2", api_key="your-key")
     """
     if isinstance(mode, str):
         mode = DescriptionMode(mode)

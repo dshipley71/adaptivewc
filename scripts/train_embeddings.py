@@ -37,7 +37,8 @@ Usage:
     python scripts/train_embeddings.py describe example.com --mode llm --provider ollama
     python scripts/train_embeddings.py describe example.com --mode llm --provider ollama --llm-model llama3.2
     python scripts/train_embeddings.py describe example.com --mode llm --provider ollama --ollama-url http://192.168.1.100:11434
-    python scripts/train_embeddings.py describe example.com --mode llm --provider ollama-cloud
+    python scripts/train_embeddings.py describe example.com --mode llm --provider ollama-cloud --ollama-api-key YOUR_KEY
+    python scripts/train_embeddings.py describe example.com --mode llm --provider ollama-cloud --ollama-api-key YOUR_KEY --llm-model gemma2:27b
 
 Requirements:
     pip install sentence-transformers scikit-learn
@@ -50,8 +51,9 @@ Requirements:
 Environment Variables:
     OPENAI_API_KEY     - Required for --provider openai
     ANTHROPIC_API_KEY  - Required for --provider anthropic
-    OLLAMA_BASE_URL    - Custom Ollama URL (default: http://localhost:11434)
-    OLLAMA_API_KEY     - Required for --provider ollama-cloud
+    OLLAMA_BASE_URL    - Custom Ollama URL (default: http://localhost:11434 for local)
+    OLLAMA_API_KEY     - Required for --provider ollama-cloud (or use --ollama-api-key)
+    OLLAMA_CLOUD_URL   - Custom Ollama Cloud URL (default: https://ollama.com/v1)
 """
 
 import argparse
@@ -361,6 +363,9 @@ async def cmd_describe(args, structure_store: StructureStore):
         # Add ollama_base_url if specified
         if hasattr(args, "ollama_url") and args.ollama_url:
             kwargs["ollama_base_url"] = args.ollama_url
+        # Add api_key if specified
+        if hasattr(args, "ollama_api_key") and args.ollama_api_key:
+            kwargs["api_key"] = args.ollama_api_key
         generator = get_description_generator(mode, **kwargs)
         print(f"Using provider: {args.provider}" + (f" (model: {args.llm_model})" if args.llm_model else ""))
     else:
@@ -697,7 +702,12 @@ async def main():
     describe_parser.add_argument(
         "--ollama-url",
         default=None,
-        help="Custom Ollama base URL (default: http://localhost:11434 for local)",
+        help="Custom Ollama base URL (default: https://ollama.com/v1 for cloud)",
+    )
+    describe_parser.add_argument(
+        "--ollama-api-key",
+        default=None,
+        help="Ollama Cloud API key (or set OLLAMA_API_KEY env var)",
     )
 
     # Set baseline command (saves to Redis)
@@ -739,7 +749,17 @@ async def main():
     compare_parser.add_argument(
         "--ollama-url",
         default=None,
-        help="Custom Ollama base URL (default: http://localhost:11434 for local)",
+        help="Custom Ollama base URL (default: https://ollama.com/v1 for cloud)",
+    )
+    compare_parser.add_argument(
+        "--llm-model",
+        default=None,
+        help="LLM model name (default: provider-specific)",
+    )
+    compare_parser.add_argument(
+        "--ollama-api-key",
+        default=None,
+        help="Ollama Cloud API key (or set OLLAMA_API_KEY env var)",
     )
 
     args = parser.parse_args()
@@ -767,10 +787,16 @@ async def main():
         # Get description mode if available
         mode = getattr(args, "mode", "rules")
         if mode == "llm":
-            kwargs = {"provider": getattr(args, "provider", "openai")}
+            kwargs = {
+                "provider": getattr(args, "provider", "openai"),
+                "model": getattr(args, "llm_model", None),
+            }
             # Add ollama_base_url if specified
             if hasattr(args, "ollama_url") and args.ollama_url:
                 kwargs["ollama_base_url"] = args.ollama_url
+            # Add api_key if specified
+            if hasattr(args, "ollama_api_key") and args.ollama_api_key:
+                kwargs["api_key"] = args.ollama_api_key
             desc_gen = get_description_generator(DescriptionMode.LLM, **kwargs)
         else:
             desc_gen = get_description_generator(DescriptionMode.RULES)
