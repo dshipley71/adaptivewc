@@ -49,6 +49,8 @@ class StructureStore:
     STRATEGY_PREFIX = "crawler:strategy:"
     HISTORY_PREFIX = "crawler:structure_history:"
     VARIANTS_PREFIX = "crawler:variants:"
+    BASELINE_PREFIX = "crawler:baseline:"
+    BASELINE_META_PREFIX = "crawler:baseline_meta:"
     DOMAINS_KEY = "crawler:structure_domains"
 
     # Default TTL (7 days)
@@ -904,6 +906,249 @@ class StructureStore:
         except Exception as e:
             self.logger.error("Failed to clear", error=str(e))
             return 0
+
+    # =========================================================================
+    # Baseline Storage Methods (for drift detection)
+    # =========================================================================
+
+    def _baseline_key(self, domain: str, page_type: str = "homepage") -> str:
+        """Get Redis key for a baseline embedding."""
+        return f"{self.BASELINE_PREFIX}{domain}:{page_type}"
+
+    def _baseline_meta_key(self, domain: str, page_type: str = "homepage") -> str:
+        """Get Redis key for baseline metadata."""
+        return f"{self.BASELINE_META_PREFIX}{domain}:{page_type}"
+
+    async def save_baseline(
+        self,
+        domain: str,
+        embedding: list[float],
+        page_type: str = "homepage",
+        model_name: str = "all-MiniLM-L6-v2",
+        structure_version: int = 1,
+        variant_id: str = "default",
+    ) -> bool:
+        """
+        Save a baseline embedding for a domain.
+
+        Args:
+            domain: Domain name.
+            embedding: Embedding vector (list of floats).
+            page_type: Page type identifier.
+            model_name: Name of the embedding model used.
+            structure_version: Version of the structure used to create baseline.
+            variant_id: Variant ID of the baseline structure.
+
+        Returns:
+            True if saved successfully.
+        """
+        key = self._baseline_key(domain, page_type)
+        meta_key = self._baseline_meta_key(domain, page_type)
+
+        try:
+            # Store embedding as JSON array (compact storage)
+            await self.redis.setex(key, self.ttl * 4, json.dumps(embedding))
+
+            # Store metadata
+            meta = {
+                "domain": domain,
+                "page_type": page_type,
+                "model_name": model_name,
+                "structure_version": structure_version,
+                "variant_id": variant_id,
+                "created_at": datetime.utcnow().isoformat(),
+                "embedding_dim": len(embedding),
+            }
+            await self.redis.setex(meta_key, self.ttl * 4, json.dumps(meta))
+
+            self.logger.debug(
+                "Saved baseline",
+                domain=domain,
+                page_type=page_type,
+                embedding_dim=len(embedding),
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                "Failed to save baseline",
+                domain=domain,
+                page_type=page_type,
+                error=str(e),
+            )
+            return False
+
+    async def get_baseline(
+        self,
+        domain: str,
+        page_type: str = "homepage",
+    ) -> tuple[list[float] | None, dict[str, Any] | None]:
+        """
+        Get baseline embedding and metadata for a domain.
+
+        Args:
+            domain: Domain name.
+            page_type: Page type identifier.
+
+        Returns:
+            Tuple of (embedding, metadata) or (None, None) if not found.
+        """
+        key = self._baseline_key(domain, page_type)
+        meta_key = self._baseline_meta_key(domain, page_type)
+
+        try:
+            embedding_data = await self.redis.get(key)
+            meta_data = await self.redis.get(meta_key)
+
+            if not embedding_data:
+                return None, None
+
+            embedding = json.loads(embedding_data)
+            meta = json.loads(meta_data) if meta_data else {}
+
+            return embedding, meta
+
+        except Exception as e:
+            self.logger.error(
+                "Failed to get baseline",
+                domain=domain,
+                page_type=page_type,
+                error=str(e),
+            )
+            return None, None
+
+    async def delete_baseline(
+        self,
+        domain: str,
+        page_type: str = "homepage",
+    ) -> bool:
+        """
+        Delete baseline for a domain.
+
+        Args:
+            domain: Domain name.
+            page_type: Page type identifier.
+
+        Returns:
+            True if deleted.
+        """
+        key = self._baseline_key(domain, page_type)
+        meta_key = self._baseline_meta_key(domain, page_type)
+
+        try:
+            await self.redis.delete(key, meta_key)
+            return True
+        except Exception as e:
+            self.logger.error(
+                "Failed to delete baseline",
+                domain=domain,
+                page_type=page_type,
+                error=str(e),
+            )
+            return False
+
+    async def list_baselines(self) -> list[dict[str, Any]]:
+        """
+        List all stored baselines.
+
+        Returns:
+            List of baseline metadata dicts.
+        """
+        try:
+            meta_keys = await self.redis.keys(f"{self.BASELINE_META_PREFIX}*")
+            baselines = []
+
+            for key in meta_keys:
+                data = await self.redis.get(key)
+                if data:
+                    meta = json.loads(data)
+                    baselines.append(meta)
+
+            return sorted(baselines, key=lambda x: x.get("domain", ""))
+
+        except Exception as e:
+            self.logger.error("Failed to list baselines", error=str(e))
+            return []
+
+    async def get_baseline_stats(self) -> dict[str, Any]:
+        """
+        Get statistics about stored baselines.
+
+        Returns:
+            Dictionary with baseline statistics.
+        """
+        try:
+            baselines = await self.list_baselines()
+
+            # Group by model
+            by_model: dict[str, int] = {}
+            for b in baselines:
+                model = b.get("model_name", "unknown")
+                by_model[model] = by_model.get(model, 0) + 1
+
+            # Group by page type
+            by_page_type: dict[str, int] = {}
+            for b in baselines:
+                pt = b.get("page_type", "unknown")
+                by_page_type[pt] = by_page_type.get(pt, 0) + 1
+
+            return {
+                "total_baselines": len(baselines),
+                "unique_domains": len(set(b.get("domain") for b in baselines)),
+                "by_model": by_model,
+                "by_page_type": by_page_type,
+            }
+
+        except Exception as e:
+            self.logger.error("Failed to get baseline stats", error=str(e))
+            return {"error": str(e)}
+
+    async def save_baselines_for_all_domains(
+        self,
+        embedding_func,
+        model_name: str = "all-MiniLM-L6-v2",
+    ) -> dict[str, bool]:
+        """
+        Create and save baselines for all domains in the store.
+
+        Args:
+            embedding_func: Async function that takes a PageStructure and returns embedding.
+            model_name: Name of the embedding model.
+
+        Returns:
+            Dict mapping domain to success status.
+        """
+        results = {}
+        domains = await self.list_domains()
+
+        for domain, page_type in domains:
+            # Get variants for this domain/page_type
+            variants = await self.get_all_variants(domain, page_type)
+            variant_id = variants[0] if variants else "default"
+
+            structure = await self.get_structure(domain, page_type, variant_id)
+            if structure:
+                try:
+                    embedding = await embedding_func(structure)
+                    success = await self.save_baseline(
+                        domain=domain,
+                        embedding=embedding,
+                        page_type=page_type,
+                        model_name=model_name,
+                        structure_version=structure.version,
+                        variant_id=variant_id,
+                    )
+                    results[f"{domain}:{page_type}"] = success
+                except Exception as e:
+                    self.logger.error(
+                        "Failed to create baseline",
+                        domain=domain,
+                        page_type=page_type,
+                        error=str(e),
+                    )
+                    results[f"{domain}:{page_type}"] = False
+
+        return results
 
     def _serialize_structure(self, structure: PageStructure) -> dict[str, Any]:
         """Serialize PageStructure to dict."""
