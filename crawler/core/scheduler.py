@@ -295,7 +295,22 @@ class Scheduler:
         if self.config.max_pages and self._total_crawled >= self.config.max_pages:
             return False
 
-        return not await self.is_empty()
+        # If queue is empty, nothing more to crawl
+        if await self.is_empty():
+            return False
+
+        # If per-domain limit is set, check if any domain can still be crawled
+        if self.config.max_pages_per_domain:
+            domains = await self.url_store.get_active_domains()
+            for domain in domains:
+                stats = self._get_domain_stats(domain)
+                if stats.pages_crawled < self.config.max_pages_per_domain:
+                    # At least one domain can still be crawled
+                    return True
+            # All domains with pending URLs have hit their per-domain limit
+            return False
+
+        return True
 
     def get_stats(self) -> dict[str, Any]:
         """
