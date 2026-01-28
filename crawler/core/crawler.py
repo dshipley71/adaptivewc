@@ -513,16 +513,16 @@ class Crawler:
             domain: Domain name.
             page_type: Page type classification.
         """
-        if not self._content_extractor or not self._structure_store:
+        if not self._content_extractor or not self._structure_store or not self._structure_analyzer:
             return
 
         try:
-            # Get the appropriate strategy variant
-            matching_variant, _ = await self._structure_store.find_matching_variant(
-                # We need the current structure for variant matching
-                # For now, use default variant and try to get strategy
-                # This is a simplification - in production you'd want to match structure first
-                None  # type: ignore
+            # Analyze current structure to find matching variant
+            current_structure = self._structure_analyzer.analyze(html, url, page_type)
+
+            # Find matching variant based on structure similarity
+            matching_variant, similarity = await self._structure_store.find_matching_variant(
+                current_structure
             )
 
             # Try to get stored strategy
