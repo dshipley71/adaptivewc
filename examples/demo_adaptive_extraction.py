@@ -26,7 +26,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from crawler.adaptive.change_detector import ChangeDetector
-from crawler.adaptive.strategy_learner import StrategyLearner, LearningResult
+from crawler.adaptive.strategy_learner import StrategyLearner, LearnedStrategy
 from crawler.adaptive.structure_analyzer import StructureAnalyzer
 from crawler.extraction.content_extractor import ContentExtractor
 from crawler.models import ExtractionStrategy, PageStructure
@@ -311,7 +311,7 @@ class AdaptiveExtractionDemo:
         self.print_structure_summary(structure)
 
         print("\n🧠 Learning extraction strategy...")
-        learning_result: LearningResult = self.strategy_learner.infer(html, structure)
+        learning_result: LearnedStrategy = self.strategy_learner.infer(html, structure)
         strategy = learning_result.strategy
 
         print("\n📋 Learned Strategy:")
