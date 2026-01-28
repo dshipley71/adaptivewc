@@ -78,6 +78,7 @@ class StrategyLearner:
         ("#content", 0.7),
         (".main-content", 0.75),
         ("#main-content", 0.75),
+        ("body", 0.3),  # Last-resort fallback for minimal pages
     ]
 
     # Common title patterns
