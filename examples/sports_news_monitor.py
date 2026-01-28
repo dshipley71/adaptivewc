@@ -708,6 +708,10 @@ async def main() -> None:
         print("    docker run -d -p 6379:6379 redis:7-alpine")
         print("\n  Option 2: Local install (Debian/Ubuntu)")
         print("    python examples/sports_news_monitor.py --install-redis")
+        print("\n  Option 3: Use existing Redis installation")
+        print("    redis-server --daemonize yes")
+        print("    # Or start via systemctl:")
+        print("    sudo systemctl start redis")
         sys.exit(1)
 
     # Create and run monitor
