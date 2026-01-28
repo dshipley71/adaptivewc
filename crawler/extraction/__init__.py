@@ -1,5 +1,6 @@
 """Content extraction modules."""
 
+from crawler.extraction.content_extractor import ContentExtractor
 from crawler.extraction.link_extractor import (
     ExtractedLink,
     LinkExtractionResult,
@@ -8,6 +9,7 @@ from crawler.extraction.link_extractor import (
 )
 
 __all__ = [
+    "ContentExtractor",
     "ExtractedLink",
     "LinkExtractionResult",
     "LinkExtractor",

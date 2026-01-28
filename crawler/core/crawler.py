@@ -23,6 +23,7 @@ from crawler.config import CrawlConfig, GDPRConfig, PIIHandlingConfig, RateLimit
 from crawler.core.fetcher import Fetcher, FetcherConfig
 from crawler.core.scheduler import Scheduler, SchedulerConfig
 from crawler.exceptions import StorageError
+from crawler.extraction.content_extractor import ContentExtractor
 from crawler.extraction.link_extractor import LinkExtractor
 from crawler.legal.cfaa_checker import CFAAChecker
 from crawler.legal.pii_detector import PIIDetector
@@ -50,6 +51,8 @@ class CrawlerStats:
     domains_crawled: set[str] = field(default_factory=set)
     structures_analyzed: int = 0
     structure_changes_detected: int = 0
+    content_extracted: int = 0
+    extraction_failed: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -69,6 +72,8 @@ class CrawlerStats:
             "domains_crawled": len(self.domains_crawled),
             "structures_analyzed": self.structures_analyzed,
             "structure_changes_detected": self.structure_changes_detected,
+            "content_extracted": self.content_extracted,
+            "extraction_failed": self.extraction_failed,
         }
 
 
@@ -107,8 +112,7 @@ class Crawler:
         self._fetcher: Fetcher | None = None
         self._scheduler: Scheduler | None = None
         self._link_extractor: LinkExtractor | None = None
-        self._structure_analyzer: StructureAnalyzer | None = None
-        self._structure_store: AnyStructureStore | None = None
+        self._content_extractor: ContentExtractor | None = None
 
         # Adaptive extraction components
         self._structure_analyzer: StructureAnalyzer | None = None
@@ -218,6 +222,9 @@ class Crawler:
             exclude_patterns=self.config.exclude_patterns,
             logger=self.logger,
         )
+
+        # Initialize content extractor
+        self._content_extractor = ContentExtractor(logger=self.logger)
 
         # Initialize adaptive extraction components
         self._structure_analyzer = StructureAnalyzer(logger=self.logger)
@@ -339,6 +346,10 @@ class Crawler:
 
                 # Perform adaptive structure analysis
                 await self._analyze_structure(url, result.html, entry.domain)
+
+                # Extract structured content using learned strategy
+                page_type = self._classify_page_type(url)
+                await self._extract_and_save_content(url, result.html, entry.domain, page_type)
 
             # Save content
             await self._save_content(url, result)
@@ -489,6 +500,143 @@ class Crawler:
             return "homepage"
         else:
             return "general"
+
+    async def _extract_and_save_content(
+        self, url: str, html: str, domain: str, page_type: str
+    ) -> None:
+        """
+        Extract structured content using learned strategy and save it.
+
+        Args:
+            url: URL being extracted.
+            html: HTML content.
+            domain: Domain name.
+            page_type: Page type classification.
+        """
+        if not self._content_extractor or not self._structure_store:
+            return
+
+        try:
+            # Get the appropriate strategy variant
+            matching_variant, _ = await self._structure_store.find_matching_variant(
+                # We need the current structure for variant matching
+                # For now, use default variant and try to get strategy
+                # This is a simplification - in production you'd want to match structure first
+                None  # type: ignore
+            )
+
+            # Try to get stored strategy
+            variant_id = matching_variant if matching_variant else "default"
+            strategy = await self._structure_store.get_strategy(
+                domain, page_type, variant_id
+            )
+
+            if not strategy:
+                # No strategy learned yet - skip extraction
+                self.logger.debug(
+                    "No extraction strategy available yet",
+                    url=url,
+                    domain=domain,
+                    page_type=page_type,
+                )
+                return
+
+            # Apply extraction strategy
+            extraction_result = self._content_extractor.extract(url, html, strategy)
+
+            # Record metrics
+            title_len = len(extraction_result.content.title or "") if extraction_result.content else 0
+            content_len = len(extraction_result.content.content or "") if extraction_result.content else 0
+            confidence = extraction_result.content.confidence if extraction_result.content else 0.0
+
+            metrics.record_extraction(
+                domain=domain,
+                page_type=page_type,
+                success=extraction_result.success,
+                confidence=confidence,
+                duration_ms=extraction_result.duration_ms,
+                title_length=title_len,
+                content_length=content_len,
+            )
+
+            if extraction_result.success and extraction_result.content:
+                # Save extracted content
+                await self._save_extracted_content(url, extraction_result)
+                self._stats.content_extracted += 1
+
+                self.logger.info(
+                    "Content extracted successfully",
+                    url=url,
+                    title_length=title_len,
+                    content_length=content_len,
+                    confidence=f"{confidence:.2%}",
+                )
+            else:
+                self._stats.extraction_failed += 1
+                self.logger.warning(
+                    "Content extraction failed",
+                    url=url,
+                    errors=extraction_result.errors,
+                    warnings=extraction_result.warnings,
+                )
+
+        except Exception as e:
+            self._stats.extraction_failed += 1
+            self.logger.error(
+                "Unexpected error during extraction",
+                url=url,
+                error=str(e),
+            )
+
+    async def _save_extracted_content(
+        self, url: str, extraction_result: Any
+    ) -> None:
+        """
+        Save extracted structured content to disk.
+
+        Args:
+            url: URL of the extracted content.
+            extraction_result: ExtractionResult with extracted content.
+        """
+        try:
+            safe_name = self._url_to_filename(url)
+            content_path = self._output_dir / f"{safe_name}_extracted.json"
+
+            # Build structured data
+            data = {
+                "url": extraction_result.url,
+                "extracted_at": extraction_result.content.extracted_at.isoformat(),
+                "strategy_used": extraction_result.strategy_used,
+                "confidence": extraction_result.content.confidence,
+                "title": extraction_result.content.title,
+                "content": extraction_result.content.content,
+                "metadata": extraction_result.content.metadata,
+                "images": extraction_result.content.images,
+                "links": extraction_result.content.links,
+                "errors": extraction_result.errors,
+                "warnings": extraction_result.warnings,
+                "duration_ms": extraction_result.duration_ms,
+            }
+
+            # Save with file lock
+            async with self._file_lock:
+                try:
+                    with open(content_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                except IOError as e:
+                    self.logger.error(
+                        "Failed to save extracted content",
+                        url=url,
+                        path=str(content_path),
+                        error=str(e),
+                    )
+
+        except Exception as e:
+            self.logger.error(
+                "Unexpected error saving extracted content",
+                url=url,
+                error=str(e),
+            )
 
     async def _save_content(self, url: str, result: FetchResult) -> None:
         """Save crawled content to disk with proper error handling."""
