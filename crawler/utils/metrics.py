@@ -125,6 +125,20 @@ EXTRACTION_CONFIDENCE = Histogram(
     buckets=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
 )
 
+EXTRACTION_DURATION = Histogram(
+    "crawler_extraction_duration_ms",
+    "Extraction operation duration in milliseconds",
+    ["domain", "page_type"],
+    buckets=[10, 25, 50, 100, 250, 500, 1000, 2500],
+)
+
+EXTRACTION_CONTENT_LENGTH = Histogram(
+    "crawler_extraction_content_length",
+    "Length of extracted content",
+    ["domain", "page_type", "field"],
+    buckets=[100, 500, 1000, 5000, 10000, 50000, 100000],
+)
+
 # =============================================================================
 # Queue/Scheduler Metrics
 # =============================================================================
@@ -265,6 +279,9 @@ def record_extraction(
     page_type: str,
     success: bool,
     confidence: float,
+    duration_ms: float = 0.0,
+    title_length: int = 0,
+    content_length: int = 0,
 ) -> None:
     """Record an extraction result."""
     status = "success" if success else "failure"
@@ -272,6 +289,21 @@ def record_extraction(
     EXTRACTION_CONFIDENCE.labels(domain=domain, page_type=page_type).observe(
         confidence
     )
+
+    if duration_ms > 0:
+        EXTRACTION_DURATION.labels(domain=domain, page_type=page_type).observe(
+            duration_ms
+        )
+
+    if title_length > 0:
+        EXTRACTION_CONTENT_LENGTH.labels(
+            domain=domain, page_type=page_type, field="title"
+        ).observe(title_length)
+
+    if content_length > 0:
+        EXTRACTION_CONTENT_LENGTH.labels(
+            domain=domain, page_type=page_type, field="content"
+        ).observe(content_length)
 
 
 def record_error(
