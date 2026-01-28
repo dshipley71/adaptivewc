@@ -536,7 +536,7 @@ class SportsNewsMonitor:
         # Create change record
         change = ContentChange(
             url=url,
-            detected_at=datetime.now(datetime.UTC),
+            detected_at=datetime.now(datetime.timezone.utc),
             change_type=change_type,
             similarity_score=similarity_score,
             extracted_content=extraction_result,
@@ -599,7 +599,7 @@ class SportsNewsMonitor:
 
     async def _save_changes_to_file(self, changes: list[ContentChange]) -> None:
         """Save detected changes to a JSON file."""
-        timestamp = datetime.now(datetime.UTC).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
         filepath = Path(self.config.output_dir) / f"changes_{timestamp}.json"
 
         data = []
