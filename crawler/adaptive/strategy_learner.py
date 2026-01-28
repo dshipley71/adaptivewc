@@ -89,6 +89,7 @@ class StrategyLearner:
         ("article h1", 0.85),
         (".article-title", 0.8),
         ("h1", 0.7),
+        ("title", 0.3),  # Last-resort fallback using page title
     ]
 
     # Common date patterns

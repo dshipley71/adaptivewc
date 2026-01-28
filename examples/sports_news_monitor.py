@@ -291,9 +291,58 @@ class SportsNewsMonitor:
         """Convert URL to a safe Redis key."""
         return hashlib.md5(url.encode()).hexdigest()
 
-    def _compute_content_hash(self, content: str) -> str:
-        """Compute hash of content for change detection."""
-        return hashlib.sha256(content.encode()).hexdigest()[:16]
+    def _compute_structure_fingerprint(self, structure: PageStructure) -> str:
+        """
+        Compute a fingerprint hash based on structural elements only.
+
+        This ignores dynamic content like timestamps, scores, and text content.
+        Only structural elements are considered:
+        - Tag hierarchy (HTML element counts)
+        - CSS class names
+        - Element IDs
+        - Semantic landmarks
+
+        This ensures that dynamic content changes (times, dates, scores)
+        don't trigger false positive change detections.
+        """
+        fingerprint_parts = []
+
+        # Tag hierarchy - stable structural indicator
+        if structure.tag_hierarchy:
+            tag_counts = structure.tag_hierarchy.get("tag_counts", {})
+            # Sort for consistent ordering
+            sorted_tags = sorted(tag_counts.items())
+            fingerprint_parts.append(f"tags:{sorted_tags}")
+
+        # CSS classes - structural indicator (ignore dynamic class names)
+        if structure.css_class_map:
+            # Use top 30 most frequent classes for stability
+            sorted_classes = sorted(
+                structure.css_class_map.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:30]
+            class_names = [name for name, _ in sorted_classes]
+            fingerprint_parts.append(f"classes:{sorted(class_names)}")
+
+        # Element IDs - structural indicator
+        if structure.id_attributes:
+            sorted_ids = sorted(structure.id_attributes)
+            fingerprint_parts.append(f"ids:{sorted_ids}")
+
+        # Semantic landmarks - structural indicator
+        if structure.semantic_landmarks:
+            sorted_landmarks = sorted(structure.semantic_landmarks.keys())
+            fingerprint_parts.append(f"landmarks:{sorted_landmarks}")
+
+        # Navigation selectors - structural indicator
+        if structure.navigation_selectors:
+            sorted_nav = sorted(structure.navigation_selectors)
+            fingerprint_parts.append(f"nav:{sorted_nav}")
+
+        # Combine all parts and hash
+        fingerprint_str = "|".join(fingerprint_parts)
+        return hashlib.sha256(fingerprint_str.encode()).hexdigest()[:16]
 
     def _extract_domain(self, url: str) -> str:
         """Extract domain from URL."""
@@ -375,10 +424,13 @@ class SportsNewsMonitor:
 
         This is the main monitoring logic:
         1. Fetch the page
-        2. Check for content changes (hash comparison)
-        3. Check for structural changes
+        2. Analyze page structure
+        3. Check for structural changes (fingerprint comparison)
         4. Adapt extraction strategy if needed
         5. Extract content
+
+        Change detection is based on structural fingerprint, NOT raw HTML.
+        This ignores dynamic content like timestamps, scores, and dates.
 
         Returns:
             ContentChange if changes detected, None otherwise.
@@ -397,20 +449,19 @@ class SportsNewsMonitor:
             self.logger.warning("Non-200 status", url=url, status=status_code)
             return None
 
-        # Compute content hash
-        current_hash = self._compute_content_hash(html)
-        previous_hash = self._content_hashes.get(url)
-
-        # Quick check: if content hash unchanged, no changes
-        if previous_hash and previous_hash == current_hash:
-            self.logger.debug("No content changes", url=url)
-            return None
-
-        # Analyze page structure
+        # Analyze page structure first (needed for fingerprint)
         domain = self._extract_domain(url)
         page_type = self._classify_page_type(url)
-
         current_structure = self.structure_analyzer.analyze(html, url, page_type)
+
+        # Compute structural fingerprint (ignores dynamic content like times/dates)
+        current_hash = self._compute_structure_fingerprint(current_structure)
+        previous_hash = self._content_hashes.get(url)
+
+        # Quick check: if structure fingerprint unchanged, no changes
+        if previous_hash and previous_hash == current_hash:
+            self.logger.debug("No structural changes", url=url)
+            return None
 
         # Get stored structure and strategy
         assert self.structure_store is not None
@@ -485,7 +536,7 @@ class SportsNewsMonitor:
         # Create change record
         change = ContentChange(
             url=url,
-            detected_at=datetime.utcnow(),
+            detected_at=datetime.now(datetime.UTC),
             change_type=change_type,
             similarity_score=similarity_score,
             extracted_content=extraction_result,
@@ -548,7 +599,7 @@ class SportsNewsMonitor:
 
     async def _save_changes_to_file(self, changes: list[ContentChange]) -> None:
         """Save detected changes to a JSON file."""
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(datetime.UTC).strftime("%Y%m%d_%H%M%S")
         filepath = Path(self.config.output_dir) / f"changes_{timestamp}.json"
 
         data = []
