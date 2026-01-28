@@ -12,8 +12,11 @@ Use Case:
     and can trigger alerts or store the content for further processing.
 
 Usage:
-    # Start Redis first
+    # Option 1: Start Redis with Docker
     docker run -d -p 6379:6379 redis:7-alpine
+
+    # Option 2: Install Redis locally (Debian/Ubuntu)
+    python examples/sports_news_monitor.py --install-redis
 
     # Run the monitor
     python examples/sports_news_monitor.py
@@ -33,6 +36,9 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -41,6 +47,86 @@ from typing import Any, Callable
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+
+def install_redis_local() -> bool:
+    """
+    Install Redis locally on Debian/Ubuntu systems.
+
+    This is an alternative to using Docker for environments where
+    Docker is not available (e.g., Google Colab, some CI systems).
+
+    Returns:
+        True if installation successful, False otherwise.
+    """
+    print("Installing Redis locally...")
+    print("This requires sudo access on Debian/Ubuntu systems.\n")
+
+    commands = [
+        # Add Redis GPG key
+        (
+            "curl -fsSL https://packages.redis.io/gpg | "
+            "sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg --yes"
+        ),
+        # Add Redis repository
+        (
+            'echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] '
+            'https://packages.redis.io/deb $(lsb_release -cs) main" | '
+            "sudo tee /etc/apt/sources.list.d/redis.list"
+        ),
+        # Update package list
+        "sudo apt-get update",
+        # Install Redis Stack Server
+        "sudo apt-get install -y redis-stack-server",
+        # Install Python redis client
+        "pip install redis",
+    ]
+
+    for cmd in commands:
+        print(f"Running: {cmd[:60]}...")
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                print(f"  Warning: {result.stderr[:100] if result.stderr else 'Command failed'}")
+        except Exception as e:
+            print(f"  Error: {e}")
+            return False
+
+    # Start Redis server
+    print("\nStarting Redis server...")
+    try:
+        subprocess.run(
+            "sudo systemctl start redis-stack-server || redis-server --daemonize yes",
+            shell=True,
+            capture_output=True,
+        )
+    except Exception:
+        # Try alternative start method
+        try:
+            subprocess.Popen(
+                ["redis-server", "--daemonize", "yes"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            print(f"Could not start Redis: {e}")
+            print("Try starting manually: redis-server --daemonize yes")
+            return False
+
+    print("\nRedis installation complete!")
+    print("Redis should now be running on localhost:6379")
+    return True
+
+
+def check_redis_installed() -> bool:
+    """Check if Redis is available."""
+    return shutil.which("redis-server") is not None
+
 
 import httpx
 import redis.asyncio as redis
@@ -554,8 +640,18 @@ async def main() -> None:
         action="store_true",
         help="Enable verbose logging",
     )
+    parser.add_argument(
+        "--install-redis",
+        action="store_true",
+        help="Install Redis locally (Debian/Ubuntu) and exit",
+    )
 
     args = parser.parse_args()
+
+    # Handle Redis installation request
+    if args.install_redis:
+        success = install_redis_local()
+        sys.exit(0 if success else 1)
 
     # Setup logging
     setup_logging(
@@ -607,8 +703,11 @@ async def main() -> None:
         print("  [OK] Redis is running")
     except Exception as e:
         print(f"  [FAIL] Redis connection failed: {e}")
-        print("\nPlease start Redis:")
-        print("  docker run -d -p 6379:6379 redis:7-alpine")
+        print("\nRedis is required. Choose an option:")
+        print("\n  Option 1: Docker (recommended)")
+        print("    docker run -d -p 6379:6379 redis:7-alpine")
+        print("\n  Option 2: Local install (Debian/Ubuntu)")
+        print("    python examples/sports_news_monitor.py --install-redis")
         sys.exit(1)
 
     # Create and run monitor
