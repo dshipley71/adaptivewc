@@ -20,14 +20,15 @@ Usage:
     # Option 1: Start Redis with Docker
     docker run -d -p 6379:6379 redis:7-alpine
 
-    # Set Ollama Cloud API key (for LLM descriptions)
-    export OLLAMA_API_KEY=your_api_key_here
-
-    # Run the monitor
+    # Run the monitor with Ollama Cloud (default)
+    # Note: Ollama Cloud may not require an API key for public endpoints
     python examples/sports_news_monitor_ml.py
 
     # Monitor specific URL
     python examples/sports_news_monitor_ml.py --url https://www.espn.com/nfl/
+
+    # Use specific Ollama Cloud model (models use -cloud suffix)
+    python examples/sports_news_monitor_ml.py --llm-model gemma3:12b-cloud
 
     # Use local Ollama instead of cloud
     python examples/sports_news_monitor_ml.py --llm-provider ollama
@@ -42,7 +43,11 @@ Usage:
 Requirements:
     - Redis running on localhost:6379
     - pip install -e ".[ml]"  # Includes sentence-transformers, xgboost, etc.
-    - OLLAMA_API_KEY environment variable (for ollama-cloud)
+
+Ollama Cloud Configuration:
+    - Default URL: https://ollama.com/v1
+    - Default model: gemma3:12b-cloud (models use -cloud suffix)
+    - API key is optional for public endpoints (use OLLAMA_API_KEY if needed)
 """
 
 import argparse
@@ -1071,12 +1076,12 @@ async def main() -> None:
 
     # Check LLM API key for cloud providers
     if config.llm_provider == "ollama-cloud":
-        api_key = config.ollama_api_key or os.environ.get("OLLAMA_API_KEY")
+        api_key = config.ollama_api_key or os.environ.get("OLLAMA_API_KEY", "")
         if api_key:
             print("  [OK] Ollama Cloud API key found")
         else:
-            print("  [WARN] OLLAMA_API_KEY not set - LLM descriptions disabled")
-            print("         Set OLLAMA_API_KEY or use --ollama-api-key")
+            print("  [INFO] No OLLAMA_API_KEY set (optional for public Ollama Cloud)")
+            print("         Default: https://ollama.com/v1 with gemma3:12b-cloud")
     elif config.llm_provider == "openai":
         if os.environ.get("OPENAI_API_KEY"):
             print("  [OK] OpenAI API key found")
