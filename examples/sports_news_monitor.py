@@ -152,9 +152,10 @@ class ContentChange:
     extracted_content: ExtractionResult | None = None
     previous_hash: str | None = None
     current_hash: str | None = None
+    change_analysis: ChangeAnalysis | None = None  # Detailed change breakdown
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "url": self.url,
             "detected_at": self.detected_at.isoformat(),
             "change_type": self.change_type,
@@ -162,6 +163,12 @@ class ContentChange:
             "previous_hash": self.previous_hash,
             "current_hash": self.current_hash,
         }
+
+        # Include detailed change analysis if available
+        if self.change_analysis:
+            result["change_analysis"] = self.change_analysis.to_dict()
+
+        return result
 
 
 @dataclass
@@ -475,15 +482,16 @@ class SportsNewsMonitor:
         change_type = "new_content"
         similarity_score = 1.0
         strategy: ExtractionStrategy
+        change_analysis: ChangeAnalysis | None = None
 
         if stored_structure and stored_strategy:
             # Detect structural changes
-            analysis = self.change_detector.detect_changes(
+            change_analysis = self.change_detector.detect_changes(
                 stored_structure, current_structure
             )
-            similarity_score = analysis.similarity_score
+            similarity_score = change_analysis.similarity_score
 
-            if analysis.requires_relearning:
+            if change_analysis.requires_relearning:
                 # Structure changed significantly - adapt strategy
                 self.logger.info(
                     "Structure change detected - adapting",
@@ -542,6 +550,7 @@ class SportsNewsMonitor:
             extracted_content=extraction_result,
             previous_hash=previous_hash,
             current_hash=current_hash,
+            change_analysis=change_analysis,
         )
 
         self._change_history.append(change)
