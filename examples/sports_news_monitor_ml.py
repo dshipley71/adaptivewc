@@ -744,7 +744,7 @@ class MLSportsNewsMonitor:
                 content = change.extracted_content.content
                 record["extracted"] = {
                     "title": content.title,
-                    "content_preview": content.content[:500] if content.content else None,
+                    "content": content.content,  # Full content (not truncated)
                     "content_length": len(content.content) if content.content else 0,
                     "metadata": content.metadata,
                 }
