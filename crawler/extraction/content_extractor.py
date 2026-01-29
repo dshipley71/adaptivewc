@@ -185,11 +185,17 @@ class ContentExtractor:
         try:
             elements = soup.select(rule.primary)
             if elements:
-                text = self._extract_text_from_element(
-                    elements[0], rule.extraction_method, rule.attribute_name
-                )
-                if text:
-                    return text, rule.confidence
+                # Extract from all matching elements and join
+                texts = []
+                for elem in elements:
+                    text = self._extract_text_from_element(
+                        elem, rule.extraction_method, rule.attribute_name
+                    )
+                    if text:
+                        texts.append(text)
+                if texts:
+                    combined = "\n\n".join(texts)
+                    return combined, rule.confidence
         except Exception as e:
             self.logger.warning(
                 "Primary selector failed",
@@ -202,13 +208,19 @@ class ContentExtractor:
             try:
                 elements = soup.select(fallback)
                 if elements:
-                    text = self._extract_text_from_element(
-                        elements[0], rule.extraction_method, rule.attribute_name
-                    )
-                    if text:
+                    # Extract from all matching elements and join
+                    texts = []
+                    for elem in elements:
+                        text = self._extract_text_from_element(
+                            elem, rule.extraction_method, rule.attribute_name
+                        )
+                        if text:
+                            texts.append(text)
+                    if texts:
+                        combined = "\n\n".join(texts)
                         # Reduce confidence for using fallback
                         fallback_confidence = rule.confidence * (0.9 ** (i + 1))
-                        return text, fallback_confidence
+                        return combined, fallback_confidence
             except Exception as e:
                 self.logger.warning(
                     "Fallback selector failed",
