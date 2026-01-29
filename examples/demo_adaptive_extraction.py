@@ -25,7 +25,7 @@ from typing import Any
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from crawler.adaptive.change_detector import ChangeDetector
+from crawler.adaptive.change_detector import ChangeDetector, ChangeAnalysis
 from crawler.adaptive.strategy_learner import StrategyLearner, LearnedStrategy
 from crawler.adaptive.structure_analyzer import StructureAnalyzer
 from crawler.extraction.content_extractor import ContentExtractor
@@ -283,8 +283,9 @@ class AdaptiveExtractionDemo:
         if result.warnings:
             print(f"  Warnings: {', '.join(result.warnings)}")
 
-    def print_changes(self, analysis: Any) -> None:
-        """Print detected changes."""
+    def print_changes(self, analysis: ChangeAnalysis) -> None:
+        """Print detected changes with detailed diff information."""
+        print(f"Classification: {analysis.classification.value}")
         print(f"Similarity Score: {analysis.similarity_score:.2%}")
         print(f"Requires Re-learning: {'Yes' if analysis.requires_relearning else 'No'}")
         print(f"Number of Changes: {len(analysis.changes)}")
@@ -293,10 +294,38 @@ class AdaptiveExtractionDemo:
             print(f"\nDetected Changes:")
             for change in analysis.changes:
                 breaking_marker = "🔴" if change.breaking else "🟡"
-                print(f"  {breaking_marker} {change.change_type}: {change.reason}")
+                print(f"  {breaking_marker} {change.change_type.value}: {change.reason}")
                 print(f"     Confidence: {change.confidence:.2%}")
                 if change.affected_components:
                     print(f"     Affected: {', '.join(change.affected_components)}")
+
+                # Print evidence/diff details for this change
+                if change.evidence:
+                    print(f"     Evidence:")
+                    for key, value in change.evidence.items():
+                        if isinstance(value, dict) and len(value) <= 5:
+                            print(f"       {key}: {value}")
+                        elif isinstance(value, list) and len(value) <= 5:
+                            print(f"       {key}: {value}")
+                        elif isinstance(value, dict):
+                            print(f"       {key}: ({len(value)} items)")
+                        elif isinstance(value, list):
+                            print(f"       {key}: ({len(value)} items)")
+
+        # Print consolidated diff details
+        if analysis.diff_details:
+            print(f"\n📋 Detailed Diff Summary:")
+            for component, diffs in analysis.diff_details.items():
+                print(f"\n  {component}:")
+                for diff_type, items in diffs.items():
+                    if isinstance(items, dict):
+                        item_list = list(items.keys())[:5]
+                        more = f" (+{len(items) - 5} more)" if len(items) > 5 else ""
+                        print(f"    {diff_type}: {item_list}{more}")
+                    elif isinstance(items, list):
+                        item_list = items[:5]
+                        more = f" (+{len(items) - 5} more)" if len(items) > 5 else ""
+                        print(f"    {diff_type}: {item_list}{more}")
 
     async def phase1_initial_crawl(self) -> tuple[PageStructure, ExtractionStrategy]:
         """Phase 1: Initial crawl - Learning phase."""
