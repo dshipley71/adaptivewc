@@ -14,6 +14,7 @@ An intelligent, compliance-first web crawler with ML-based structure learning th
 - [Usage Examples](#usage-examples)
 - [Sports News Monitor Example](#sports-news-monitor-example)
 - [API Reference](#api-reference)
+- [Machine Learning Features](#machine-learning-features)
 - [Development](#development)
 - [Legal Notice](#legal-notice)
 
@@ -947,6 +948,465 @@ class ChangeAnalysis:
     similarity_score: float
     changes: list[StructureChange]
     requires_relearning: bool
+```
+
+---
+
+## Machine Learning Features
+
+The crawler includes advanced ML capabilities for semantic change detection, content classification, and LLM-powered descriptions.
+
+### ML Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    ML-ENHANCED PIPELINE                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  PAGE STRUCTURE                                                  │
+│       │                                                          │
+│       ▼                                                          │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │              EMBEDDING MODEL                             │    │
+│  │         (sentence-transformers)                          │    │
+│  │                                                          │    │
+│  │  • all-MiniLM-L6-v2 (default, 384 dims, fast)           │    │
+│  │  • all-mpnet-base-v2 (768 dims, best quality)           │    │
+│  │  • paraphrase-MiniLM-L6-v2 (paraphrase optimized)       │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│       │                                                          │
+│       ▼                                                          │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │           ML CAPABILITIES                                │    │
+│  │                                                          │    │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐     │    │
+│  │  │  Semantic   │  │    Page     │  │    LLM      │     │    │
+│  │  │  Similarity │  │   Type      │  │ Description │     │    │
+│  │  │  Detection  │  │ Classifier  │  │  Generator  │     │    │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘     │    │
+│  │        │                │                │              │    │
+│  │        ▼                ▼                ▼              │    │
+│  │   cosine sim       LR/XGB/LGBM    OpenAI/Anthropic     │    │
+│  │   threshold        prediction      /Ollama             │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Enabling ML Features
+
+#### 1. Install ML Dependencies
+
+```bash
+# Core ML (embeddings + classification)
+pip install sentence-transformers scikit-learn
+
+# Gradient boosting classifiers
+pip install xgboost lightgbm
+
+# LLM providers
+pip install openai anthropic
+
+# All features
+pip install -e ".[ml,llm]"
+```
+
+#### 2. Configure ML in Python
+
+```python
+from crawler.config import (
+    CrawlConfig,
+    StructureStoreConfig,
+    StructureStoreType,
+    LLMProviderType,
+)
+
+config = CrawlConfig(
+    seed_urls=["https://example.com"],
+    output_dir="./data",
+
+    structure_store=StructureStoreConfig(
+        # Enable LLM-powered descriptions
+        store_type=StructureStoreType.LLM,
+
+        # Enable embeddings for semantic similarity
+        enable_embeddings=True,
+        embedding_model="all-MiniLM-L6-v2",
+
+        # LLM provider settings
+        llm_provider=LLMProviderType.ANTHROPIC,
+        llm_model="claude-sonnet-4-20250514",
+        # API key from environment: ANTHROPIC_API_KEY
+    ),
+)
+```
+
+#### 3. Environment Variables
+
+```bash
+# LLM API Keys
+export OPENAI_API_KEY="sk-..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+export OLLAMA_API_KEY="your-key"  # For Ollama Cloud
+
+# Local Ollama (no key needed)
+# Just run: ollama serve
+```
+
+### Embedding-Based Change Detection
+
+Use semantic embeddings instead of rule-based comparison for more intelligent change detection.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                EMBEDDING SIMILARITY DETECTION                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  OLD STRUCTURE                    NEW STRUCTURE                  │
+│       │                                │                         │
+│       ▼                                ▼                         │
+│  ┌─────────────┐                ┌─────────────┐                 │
+│  │  Embedding  │                │  Embedding  │                 │
+│  │  [384 dims] │                │  [384 dims] │                 │
+│  └──────┬──────┘                └──────┬──────┘                 │
+│         │                              │                         │
+│         └──────────────┬───────────────┘                         │
+│                        ▼                                         │
+│               ┌─────────────────┐                                │
+│               │ Cosine Similarity│                               │
+│               │   (0.0 - 1.0)   │                                │
+│               └────────┬────────┘                                │
+│                        │                                         │
+│         ┌──────────────┼──────────────┐                         │
+│         │              │              │                          │
+│         ▼              ▼              ▼                          │
+│     ≥ 0.95         0.7-0.95        < 0.70                       │
+│    COSMETIC       MODERATE        BREAKING                       │
+│   (no action)   (log change)    (re-learn)                      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Python API
+
+```python
+from crawler.ml.embeddings import StructureEmbeddingModel, MLChangeDetector
+
+# Create embedding model
+model = StructureEmbeddingModel(model_name="all-MiniLM-L6-v2")
+
+# Embed structures
+old_embedding = model.embed_structure(old_structure)
+new_embedding = model.embed_structure(new_structure)
+
+# Compute similarity
+similarity = model.compute_similarity(
+    old_embedding.embedding,
+    new_embedding.embedding
+)
+print(f"Semantic similarity: {similarity:.2%}")
+
+# Find similar structures
+similar = model.find_similar(
+    query_embedding.embedding,
+    all_embeddings,
+    top_k=5
+)
+
+# ML-based change detection
+detector = MLChangeDetector(embedding_model=model)
+result = detector.detect_change(old_structure, new_structure)
+print(f"Is breaking: {result['is_breaking']}")
+print(f"Similarity: {result['similarity']:.2%}")
+```
+
+### Page Type Classification
+
+Train ML classifiers to automatically categorize pages.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                 PAGE TYPE CLASSIFICATION                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  INPUT: Page Structure                                           │
+│       │                                                          │
+│       ▼                                                          │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │              FEATURE EXTRACTION                          │    │
+│  │                                                          │    │
+│  │  • Tag counts (div, article, nav, etc.)                 │    │
+│  │  • CSS class patterns                                   │    │
+│  │  • Semantic landmarks                                   │    │
+│  │  • Content region characteristics                       │    │
+│  │  • Navigation patterns                                  │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│       │                                                          │
+│       ▼                                                          │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │              CLASSIFIER                                  │    │
+│  │                                                          │    │
+│  │  Choose one:                                            │    │
+│  │  • LogisticRegression (fast, interpretable)             │    │
+│  │  • XGBoost (high accuracy, feature importance)          │    │
+│  │  • LightGBM (fast training, large datasets)             │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│       │                                                          │
+│       ▼                                                          │
+│  OUTPUT: Page Type + Confidence                                  │
+│                                                                  │
+│  Examples:                                                       │
+│  • "article" (92% confidence)                                   │
+│  • "homepage" (87% confidence)                                  │
+│  • "product_listing" (78% confidence)                           │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Training a Classifier
+
+```python
+from crawler.ml.embeddings import StructureClassifier, ClassifierType
+
+# Create classifier
+classifier = StructureClassifier(
+    classifier_type=ClassifierType.XGBOOST  # or LIGHTGBM, LOGISTIC_REGRESSION
+)
+
+# Prepare training data
+structures = [structure1, structure2, ...]  # PageStructure objects
+labels = ["article", "homepage", ...]        # Page type labels
+
+# Train
+metrics = classifier.train(structures, labels)
+print(f"Accuracy: {metrics['accuracy']:.2%}")
+print(f"F1 Score: {metrics['f1_score']:.2%}")
+
+# Predict
+label, confidence = classifier.predict(new_structure)
+print(f"Predicted: {label} ({confidence:.2%} confidence)")
+
+# Get feature importance (XGBoost/LightGBM)
+importance = classifier.get_feature_importance()
+for feature, score in importance[:10]:
+    print(f"  {feature}: {score:.4f}")
+
+# Save/load model
+classifier.save("page_classifier.pkl")
+classifier.load("page_classifier.pkl")
+```
+
+### LLM-Powered Descriptions
+
+Generate rich, semantic descriptions of page structures using LLMs.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                 LLM DESCRIPTION GENERATION                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  PAGE STRUCTURE                                                  │
+│       │                                                          │
+│       ▼                                                          │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │  Structure Summary                                       │    │
+│  │  • 45 div, 23 span, 67 anchor tags                      │    │
+│  │  • Semantic: article, nav, header, footer               │    │
+│  │  • Classes: .article-content, .nav-item, .btn           │    │
+│  │  • Content regions: main content, sidebar               │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│       │                                                          │
+│       ▼                                                          │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │              LLM PROVIDER                                │    │
+│  │                                                          │    │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐   │    │
+│  │  │ OpenAI  │  │Anthropic│  │ Ollama  │  │ Ollama  │   │    │
+│  │  │ GPT-4o  │  │ Claude  │  │ (Local) │  │ (Cloud) │   │    │
+│  │  └─────────┘  └─────────┘  └─────────┘  └─────────┘   │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│       │                                                          │
+│       ▼                                                          │
+│  RICH DESCRIPTION:                                               │
+│  "This is a news article page with a prominent header            │
+│   containing navigation. The main content area uses an           │
+│   <article> tag with structured sections. The page follows       │
+│   a standard blog layout with sidebar widgets and a footer       │
+│   containing social links and copyright information."            │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Using LLM Descriptions
+
+```python
+from crawler.ml.embeddings import get_description_generator
+
+# Rules-based (no API, fast, deterministic)
+rules_gen = get_description_generator("rules")
+desc = rules_gen.generate(structure)
+
+# OpenAI
+openai_gen = get_description_generator(
+    "llm",
+    provider="openai",
+    model="gpt-4o-mini"
+)
+desc = openai_gen.generate(structure)
+
+# Anthropic (Claude)
+claude_gen = get_description_generator(
+    "llm",
+    provider="anthropic",
+    model="claude-sonnet-4-20250514"
+)
+desc = claude_gen.generate(structure)
+
+# Local Ollama (free, private)
+ollama_gen = get_description_generator(
+    "llm",
+    provider="ollama",
+    model="llama3.2"
+)
+desc = ollama_gen.generate(structure)
+
+# Generate change description
+change_desc = generator.generate_for_change_detection(
+    old_structure,
+    new_structure
+)
+print(change_desc)
+# "The page structure changed significantly: the navigation
+#  moved from sidebar to header, article content wrapper
+#  changed from .post-content to .article-body, and new
+#  advertisement slots were added between paragraphs."
+```
+
+### ML Training Script
+
+Use the built-in script for ML operations:
+
+```bash
+# Export training data from Redis
+python scripts/train_embeddings.py export -o training_data.jsonl
+
+# Create embeddings for all structures
+python scripts/train_embeddings.py embed -o embeddings.json
+
+# Find similar structures
+python scripts/train_embeddings.py similar example.com --top-k 10
+
+# Train classifiers
+python scripts/train_embeddings.py train -o classifier.pkl
+python scripts/train_embeddings.py train --classifier-type xgboost
+python scripts/train_embeddings.py train --classifier-type lightgbm
+
+# Predict page type
+python scripts/train_embeddings.py predict example.com --classifier classifier.pkl
+
+# Generate descriptions
+python scripts/train_embeddings.py describe example.com --mode rules
+python scripts/train_embeddings.py describe example.com --mode llm --provider anthropic
+
+# Baseline drift detection
+python scripts/train_embeddings.py set-baseline example.com
+python scripts/train_embeddings.py detect-drift example.com
+python scripts/train_embeddings.py set-all-baselines
+python scripts/train_embeddings.py check-all-drift
+```
+
+### Baseline Drift Detection
+
+Monitor sites for gradual structural drift over time.
+
+```python
+from crawler.ml.embeddings import MLChangeDetector
+
+detector = MLChangeDetector()
+
+# Set baseline from current structure
+detector.set_site_baseline("example.com", current_structure)
+
+# Later: check for drift
+drift = detector.detect_drift_from_baseline(new_structure)
+print(f"Drift detected: {drift['has_drift']}")
+print(f"Drift amount: {drift['drift_score']:.2%}")
+print(f"Recommendation: {drift['recommendation']}")
+```
+
+### ML Configuration Reference
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `store_type` | enum | `basic` | `basic` (rules) or `llm` (LLM-powered) |
+| `enable_embeddings` | bool | `false` | Enable semantic embeddings |
+| `embedding_model` | str | `all-MiniLM-L6-v2` | HuggingFace model name |
+| `llm_provider` | enum | `anthropic` | `anthropic`, `openai`, `ollama`, `ollama-cloud` |
+| `llm_model` | str | `""` | Model name (empty = provider default) |
+| `llm_api_key` | str | `""` | API key (empty = use env var) |
+| `ollama_base_url` | str | `http://localhost:11434` | Ollama server URL |
+
+### LLM Provider Comparison
+
+| Provider | Models | Latency | Cost | Privacy |
+|----------|--------|---------|------|---------|
+| **OpenAI** | gpt-4o-mini, gpt-4 | Low | $$ | Cloud |
+| **Anthropic** | claude-sonnet, claude-opus | Low | $$ | Cloud |
+| **Ollama (Local)** | llama3.2, mistral, codellama | Medium | Free | Full |
+| **Ollama Cloud** | Same as local | Low | Varies | Depends |
+
+### Example: Full ML Pipeline
+
+```python
+import asyncio
+from crawler.core.crawler import Crawler
+from crawler.config import CrawlConfig, StructureStoreConfig, StructureStoreType
+from crawler.ml.embeddings import (
+    StructureEmbeddingModel,
+    StructureClassifier,
+    MLChangeDetector,
+    get_description_generator,
+)
+
+async def ml_enhanced_crawl():
+    # Configure with ML features
+    config = CrawlConfig(
+        seed_urls=["https://example.com"],
+        output_dir="./data",
+        structure_store=StructureStoreConfig(
+            store_type=StructureStoreType.LLM,
+            enable_embeddings=True,
+            embedding_model="all-MiniLM-L6-v2",
+            llm_provider="anthropic",
+        ),
+    )
+
+    # Initialize ML components
+    embedding_model = StructureEmbeddingModel()
+    classifier = StructureClassifier(classifier_type="xgboost")
+    change_detector = MLChangeDetector(embedding_model=embedding_model)
+    description_gen = get_description_generator("llm", provider="anthropic")
+
+    # Run crawler
+    async with Crawler(config) as crawler:
+        stats = await crawler.crawl()
+
+    # Post-process with ML
+    for structure in collected_structures:
+        # Classify page type
+        page_type, confidence = classifier.predict(structure)
+        print(f"Page type: {page_type} ({confidence:.0%})")
+
+        # Generate description
+        desc = description_gen.generate(structure)
+        print(f"Description: {desc}")
+
+        # Check similarity to baseline
+        drift = change_detector.detect_drift_from_baseline(structure)
+        if drift['has_drift']:
+            print(f"Warning: Site structure drifted {drift['drift_score']:.0%}")
+
+asyncio.run(ml_enhanced_crawl())
 ```
 
 ---
