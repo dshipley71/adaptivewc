@@ -78,7 +78,7 @@ class StrategyLearner:
         ("#content", 0.7),
         (".main-content", 0.75),
         ("#main-content", 0.75),
-        ("body", 0.5),  # Last-resort fallback for minimal pages
+        ("body", 0.75),  # Last-resort fallback for minimal pages (0.75*0.7=0.525 > min)
     ]
 
     # Common title patterns
@@ -89,7 +89,7 @@ class StrategyLearner:
         ("article h1", 0.85),
         (".article-title", 0.8),
         ("h1", 0.7),
-        ("title", 0.5),  # Last-resort fallback using page title
+        ("title", 0.75),  # Last-resort fallback using page title (0.75*0.7=0.525 > min)
     ]
 
     # Common date patterns
