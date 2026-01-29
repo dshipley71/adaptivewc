@@ -456,6 +456,7 @@ class MLSportsNewsMonitor:
     def _classify_page_type_ml(
         self,
         structure: PageStructure,
+        url: str,
     ) -> tuple[str, float]:
         """
         Classify page type using ML classifier.
@@ -465,13 +466,13 @@ class MLSportsNewsMonitor:
         """
         if self.classifier is None:
             # Fall back to rules-based
-            return self._classify_page_type_rules(structure.url), 0.5
+            return self._classify_page_type_rules(url), 0.5
 
         try:
             return self.classifier.predict(structure)
         except Exception as e:
             self.logger.warning("ML classification failed", error=str(e))
-            return self._classify_page_type_rules(structure.url), 0.5
+            return self._classify_page_type_rules(url), 0.5
 
     async def fetch_page(self, url: str) -> tuple[str, int] | None:
         """Fetch a page with retry logic."""
@@ -574,7 +575,7 @@ class MLSportsNewsMonitor:
             similarity = 0.0  # New page
 
         # ML: Classify page type using ML
-        page_type_ml, page_type_confidence = self._classify_page_type_ml(current_structure)
+        page_type_ml, page_type_confidence = self._classify_page_type_ml(current_structure, url)
 
         # Collect training data
         self._training_data.append((current_structure, page_type_rules))
