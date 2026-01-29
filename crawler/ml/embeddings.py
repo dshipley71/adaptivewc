@@ -316,7 +316,10 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
     - openai: OpenAI API (requires OPENAI_API_KEY)
     - anthropic: Anthropic API (requires ANTHROPIC_API_KEY)
     - ollama: Local Ollama instance (default: http://localhost:11434)
-    - ollama-cloud: Ollama cloud service (requires OLLAMA_API_KEY)
+    - ollama-cloud: Ollama cloud service (default: https://ollama.com/v1)
+        - Uses OpenAI-compatible API format
+        - Models should have -cloud suffix (e.g., gemma3:12b-cloud)
+        - API key can be empty for public endpoints
     """
 
     # Default models for each provider
@@ -324,13 +327,14 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
         "openai": "gpt-4o-mini",
         "anthropic": "claude-3-haiku-20240307",
         "ollama": "llama3.2",
-        "ollama-cloud": "llama3.2",
+        # Ollama cloud models use -cloud suffix
+        "ollama-cloud": "gemma3:12b-cloud",
     }
 
     # Default Ollama endpoints
     OLLAMA_LOCAL_URL = "http://localhost:11434"
-    # Note: ollama-cloud requires OLLAMA_BASE_URL env var or --ollama-url parameter
-    # There is no default public Ollama cloud endpoint
+    # Ollama cloud uses OpenAI-compatible endpoint format
+    OLLAMA_CLOUD_URL = "https://ollama.com/v1"
 
     def __init__(
         self,
@@ -395,18 +399,13 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
                 raise ImportError("httpx package required: pip install httpx")
 
         elif self.provider == "ollama-cloud":
-            # Ollama cloud - requires API key and base URL
+            # Ollama cloud - uses OpenAI-compatible API format
+            # API key can be empty string for public endpoints
             try:
                 import httpx
-                api_key = self.api_key or os.environ.get("OLLAMA_API_KEY")
-                if not api_key:
-                    raise ValueError("OLLAMA_API_KEY environment variable or --ollama-api-key required for ollama-cloud")
-                base_url = self.ollama_base_url or os.environ.get("OLLAMA_BASE_URL")
-                if not base_url:
-                    raise ValueError(
-                        "OLLAMA_BASE_URL environment variable or --ollama-url required for ollama-cloud. "
-                        "Example: export OLLAMA_BASE_URL=https://your-ollama-host/v1"
-                    )
+                # API key can be empty (some Ollama cloud endpoints don't require it)
+                api_key = self.api_key if self.api_key is not None else os.environ.get("OLLAMA_API_KEY", "")
+                base_url = self.ollama_base_url or os.environ.get("OLLAMA_BASE_URL", self.OLLAMA_CLOUD_URL)
                 self._client = {"base_url": base_url, "api_key": api_key, "httpx": httpx}
             except ImportError:
                 raise ImportError("httpx package required: pip install httpx")
@@ -420,7 +419,8 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
         base_url = client["base_url"]
 
         headers = {"Content-Type": "application/json"}
-        if "api_key" in client:
+        # Only add Authorization header if API key is non-empty
+        if client.get("api_key"):
             headers["Authorization"] = f"Bearer {client['api_key']}"
 
         # Ollama Cloud uses OpenAI-compatible API format
