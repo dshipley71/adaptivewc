@@ -122,7 +122,7 @@ def check_redis_installed() -> bool:
 import httpx
 import redis.asyncio as redis
 
-from crawler.adaptive.change_detector import ChangeDetector
+from crawler.adaptive.change_detector import ChangeDetector, ChangeAnalysis
 from crawler.adaptive.strategy_learner import StrategyLearner
 from crawler.adaptive.structure_analyzer import StructureAnalyzer
 from crawler.compliance.robots_parser import RobotsChecker
@@ -158,9 +158,10 @@ class MLContentChange:
     extracted_content: ExtractionResult | None = None
     previous_embedding: list[float] | None = None
     current_embedding: list[float] | None = None
+    change_analysis: ChangeAnalysis | None = None  # Detailed structural change breakdown
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "url": self.url,
             "detected_at": self.detected_at.isoformat(),
             "change_type": self.change_type,
@@ -169,6 +170,12 @@ class MLContentChange:
             "predicted_page_type": self.predicted_page_type,
             "page_type_confidence": self.page_type_confidence,
         }
+
+        # Include detailed change analysis if available
+        if self.change_analysis:
+            result["change_analysis"] = self.change_analysis.to_dict()
+
+        return result
 
 
 @dataclass
@@ -449,6 +456,7 @@ class MLSportsNewsMonitor:
     def _classify_page_type_ml(
         self,
         structure: PageStructure,
+        url: str,
     ) -> tuple[str, float]:
         """
         Classify page type using ML classifier.
@@ -458,13 +466,13 @@ class MLSportsNewsMonitor:
         """
         if self.classifier is None:
             # Fall back to rules-based
-            return self._classify_page_type_rules(structure.url), 0.5
+            return self._classify_page_type_rules(url), 0.5
 
         try:
             return self.classifier.predict(structure)
         except Exception as e:
             self.logger.warning("ML classification failed", error=str(e))
-            return self._classify_page_type_rules(structure.url), 0.5
+            return self._classify_page_type_rules(url), 0.5
 
     async def fetch_page(self, url: str) -> tuple[str, int] | None:
         """Fetch a page with retry logic."""
@@ -567,7 +575,7 @@ class MLSportsNewsMonitor:
             similarity = 0.0  # New page
 
         # ML: Classify page type using ML
-        page_type_ml, page_type_confidence = self._classify_page_type_ml(current_structure)
+        page_type_ml, page_type_confidence = self._classify_page_type_ml(current_structure, url)
 
         # Collect training data
         self._training_data.append((current_structure, page_type_rules))
@@ -584,10 +592,16 @@ class MLSportsNewsMonitor:
         change_type = "new_content"
         llm_description: str | None = None
         strategy: ExtractionStrategy
+        change_analysis: ChangeAnalysis | None = None
 
         if stored_structure and stored_strategy:
             # ML: Detect changes using ML change detector
             ml_analysis = self.ml_change_detector.detect_change(
+                stored_structure, current_structure
+            )
+
+            # Also run rules-based change detection for detailed diff
+            change_analysis = self.change_detector.detect_changes(
                 stored_structure, current_structure
             )
 
@@ -680,6 +694,7 @@ class MLSportsNewsMonitor:
             extracted_content=extraction_result,
             previous_embedding=previous_embedding,
             current_embedding=current_embedding,
+            change_analysis=change_analysis,
         )
 
         self._change_history.append(change)
