@@ -1004,6 +1004,11 @@ async def main() -> None:
         format_type="console",
     )
 
+    # Suppress httpx INFO logs (redirect messages, etc.)
+    import logging
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     # Default URLs
     urls = args.url or [
         "https://www.espn.com/",
