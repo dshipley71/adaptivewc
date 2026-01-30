@@ -3,7 +3,8 @@
 Distributed Crawling Example
 
 Demonstrates how to use the distributed crawling system to coordinate
-multiple workers processing URLs in parallel across machines.
+multiple workers processing URLs in parallel across machines. Includes
+structure fingerprinting for tracking page changes across crawls.
 
 Features demonstrated:
 - Creating distributed crawl jobs
@@ -13,6 +14,8 @@ Features demonstrated:
 - Leader election for coordination tasks
 - Job state management
 - Progress monitoring
+- Structure fingerprinting for each crawled page
+- Change detection across crawl iterations
 
 Usage:
     # Start Redis first
@@ -23,7 +26,7 @@ Usage:
         --job-id my-crawl-001 \
         --seeds https://example.com https://httpbin.org
 
-    # Run a worker
+    # Run a worker (with fingerprinting)
     python examples/distributed_crawl_example.py worker \
         --job-id my-crawl-001 \
         --worker-id worker-1
@@ -34,6 +37,9 @@ Usage:
 
     # Run complete demo (creates job + workers + monitor)
     python examples/distributed_crawl_example.py demo
+
+    # Disable fingerprinting
+    python examples/distributed_crawl_example.py demo --no-fingerprint
 
 Requirements:
     - Redis running on localhost:6379
@@ -62,12 +68,15 @@ from crawler.core.distributed import (
     JobState,
     WorkerState,
 )
+from crawler.adaptive.structure_analyzer import StructureAnalyzer, AnalysisConfig
+from crawler.adaptive.change_detector import ChangeDetector, ChangeAnalysis
+from crawler.models import PageStructure
 from crawler.utils.logging import CrawlerLogger, setup_logging
 
 
 class DistributedCrawlDemo:
     """
-    Demonstrates distributed crawling capabilities.
+    Demonstrates distributed crawling capabilities with fingerprinting.
 
     Key concepts:
     - Jobs contain seed URLs and configuration
@@ -75,13 +84,39 @@ class DistributedCrawlDemo:
     - Redis ensures atomic operations (no duplicate processing)
     - Leader election handles coordination tasks
     - Heartbeats detect dead workers
+    - Structure fingerprinting for page analysis
+    - Change detection across crawls
     """
 
-    def __init__(self, redis_url: str = "redis://localhost:6379/0"):
-        """Initialize the demo."""
+    def __init__(
+        self,
+        redis_url: str = "redis://localhost:6379/0",
+        enable_fingerprinting: bool = True,
+    ):
+        """
+        Initialize the demo.
+
+        Args:
+            redis_url: Redis connection URL
+            enable_fingerprinting: Enable structure fingerprinting for change detection
+        """
         self.redis_url = redis_url
+        self.enable_fingerprinting = enable_fingerprinting
         self.logger = CrawlerLogger("distributed_demo")
         self.redis_client: redis.Redis | None = None
+
+        # Initialize fingerprinting components
+        if enable_fingerprinting:
+            self.structure_analyzer = StructureAnalyzer(
+                config=AnalysisConfig(
+                    min_content_length=100,
+                    max_depth=10,
+                    track_classes=True,
+                    track_ids=True,
+                    extract_scripts=True,
+                )
+            )
+            self.change_detector = ChangeDetector(breaking_threshold=0.70)
 
     async def connect(self) -> None:
         """Connect to Redis."""
@@ -174,13 +209,27 @@ class DistributedCrawlDemo:
             "urls_success": 0,
             "urls_failed": 0,
             "new_urls_discovered": 0,
+            "fingerprinting": {
+                "pages_analyzed": 0,
+                "structures_stored": 0,
+            } if self.enable_fingerprinting else None,
         }
+
+        # Store page structures for this worker (in production, use Redis)
+        page_structures: dict[str, PageStructure] = {}
 
         self.logger.info("Worker starting", worker_id=worker_id, job_id=job_id)
 
-        async def process_url(task: URLTask) -> tuple[bool, list[str]]:
-            """Simulate processing a URL."""
+        async def process_url(task: URLTask) -> tuple[bool, list[str], dict | None]:
+            """
+            Process a URL and optionally fingerprint its structure.
+
+            Returns:
+                Tuple of (success, new_urls, fingerprint_info)
+            """
             import httpx
+
+            fingerprint_info = None
 
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
@@ -196,11 +245,62 @@ class DistributedCrawlDemo:
                             if link.startswith("http"):
                                 new_urls.append(link)
 
-                    return True, new_urls
+                        # Fingerprint the page structure
+                        if self.enable_fingerprinting:
+                            page_type = self._classify_page_type(task.url)
+                            structure = self.structure_analyzer.analyze(
+                                response.text, task.url, page_type
+                            )
+
+                            fingerprint_info = {
+                                "content_hash": structure.content_hash,
+                                "page_type": structure.page_type,
+                                "tag_count": sum(structure.tag_hierarchy.get("tag_counts", {}).values())
+                                    if structure.tag_hierarchy else 0,
+                                "content_regions": len(structure.content_regions),
+                            }
+
+                            # Check for changes if we've seen this URL before
+                            if task.url in page_structures:
+                                previous = page_structures[task.url]
+                                change = self.change_detector.detect_changes(
+                                    previous, structure
+                                )
+                                fingerprint_info["change_detected"] = change.has_changes
+                                fingerprint_info["change_classification"] = change.classification.value
+                                fingerprint_info["similarity"] = f"{change.similarity_score:.2%}"
+
+                                if change.has_changes:
+                                    self.logger.info(
+                                        "Structure change detected",
+                                        url=task.url,
+                                        classification=change.classification.value,
+                                    )
+
+                            # Store for future comparisons
+                            page_structures[task.url] = structure
+                            stats["fingerprinting"]["pages_analyzed"] += 1
+                            stats["fingerprinting"]["structures_stored"] = len(page_structures)
+
+                    return True, new_urls, fingerprint_info
 
             except Exception as e:
                 self.logger.warning("URL processing failed", url=task.url, error=str(e))
-                return False, []
+                return False, [], None
+
+        def _classify_page_type(url: str) -> str:
+            """Classify the page type based on URL patterns."""
+            url_lower = url.lower()
+            if any(x in url_lower for x in ["/article", "/post", "/blog", "/news"]):
+                return "article"
+            elif any(x in url_lower for x in ["/category", "/tag", "/archive"]):
+                return "listing"
+            elif any(x in url_lower for x in ["/product", "/item", "/shop"]):
+                return "product"
+            return "content"
+
+        # Bind _classify_page_type as instance method
+        self._classify_page_type = _classify_page_type
 
         # Worker loop
         try:
@@ -233,8 +333,8 @@ class DistributedCrawlDemo:
                     depth=task.depth,
                 )
 
-                # Process the URL
-                success, new_urls = await process_url(task)
+                # Process the URL (with optional fingerprinting)
+                success, new_urls, fingerprint_info = await process_url(task)
 
                 # Report result
                 await worker.complete_url(task.url, success=success)
@@ -242,6 +342,16 @@ class DistributedCrawlDemo:
 
                 if success:
                     stats["urls_success"] += 1
+
+                    # Log fingerprint info if available
+                    if fingerprint_info:
+                        self.logger.info(
+                            "Page fingerprinted",
+                            url=task.url,
+                            page_type=fingerprint_info.get("page_type"),
+                            tag_count=fingerprint_info.get("tag_count"),
+                            content_regions=fingerprint_info.get("content_regions"),
+                        )
 
                     # Add discovered URLs
                     for new_url in new_urls:
@@ -495,6 +605,7 @@ async def main() -> None:
 
     # Global options
     parser.add_argument("--redis-url", type=str, default="redis://localhost:6379/0")
+    parser.add_argument("--no-fingerprint", action="store_true", help="Disable structure fingerprinting")
     parser.add_argument("--verbose", action="store_true")
 
     args = parser.parse_args()
@@ -523,13 +634,18 @@ async def main() -> None:
     3. Use atomic queue operations
     4. Monitor job progress
     5. Handle worker coordination
+    6. Fingerprint page structures during crawling
+    7. Detect structural changes across crawls
 
     Prerequisites:
       docker run -d -p 6379:6379 redis:7-alpine
 
     """)
 
-    demo = DistributedCrawlDemo(redis_url=args.redis_url)
+    demo = DistributedCrawlDemo(
+        redis_url=args.redis_url,
+        enable_fingerprinting=not args.no_fingerprint,
+    )
 
     try:
         await demo.connect()

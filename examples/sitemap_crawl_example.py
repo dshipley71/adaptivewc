@@ -3,7 +3,8 @@
 Sitemap-Based Crawling Example
 
 Demonstrates how to use the sitemap processing capabilities to efficiently
-discover and crawl URLs from a website's sitemap.
+discover and crawl URLs from a website's sitemap, with structure fingerprinting
+for change detection.
 
 Features demonstrated:
 - Fetching and parsing XML sitemaps
@@ -11,9 +12,11 @@ Features demonstrated:
 - Processing gzip-compressed sitemaps
 - Using sitemap metadata (lastmod, changefreq, priority)
 - Prioritizing URLs based on sitemap hints
+- Structure fingerprinting for each crawled page
+- Change detection between crawls (cosmetic, minor, moderate, breaking)
 
 Usage:
-    # Basic usage - crawl from sitemap
+    # Basic usage - crawl from sitemap with fingerprinting
     python examples/sitemap_crawl_example.py --domain example.com
 
     # With custom options
@@ -24,6 +27,9 @@ Usage:
 
     # Just list URLs from sitemap (no crawling)
     python examples/sitemap_crawl_example.py --domain example.com --list-only
+
+    # Disable fingerprinting
+    python examples/sitemap_crawl_example.py --domain example.com --no-fingerprint
 
 Requirements:
     - pip install -e .
@@ -48,6 +54,9 @@ from crawler.compliance.sitemap_parser import (
     ChangeFrequency,
     fetch_sitemap_urls,
 )
+from crawler.adaptive.structure_analyzer import StructureAnalyzer, AnalysisConfig
+from crawler.adaptive.change_detector import ChangeDetector, ChangeAnalysis
+from crawler.models import PageStructure
 from crawler.utils.logging import CrawlerLogger, setup_logging
 
 
@@ -69,6 +78,7 @@ class SitemapCrawler:
         max_urls: int | None = None,
         priority_threshold: float = 0.0,
         recent_days: int | None = None,
+        enable_fingerprinting: bool = True,
     ):
         """
         Initialize the sitemap crawler.
@@ -79,13 +89,30 @@ class SitemapCrawler:
             max_urls: Maximum URLs to process
             priority_threshold: Only include URLs with priority >= this value
             recent_days: Only include URLs modified within this many days
+            enable_fingerprinting: Enable structure fingerprinting for change detection
         """
         self.domain = domain
         self.user_agent = user_agent
         self.max_urls = max_urls
         self.priority_threshold = priority_threshold
         self.recent_days = recent_days
+        self.enable_fingerprinting = enable_fingerprinting
         self.logger = CrawlerLogger("sitemap_crawler")
+
+        # Initialize fingerprinting components
+        if enable_fingerprinting:
+            self.structure_analyzer = StructureAnalyzer(
+                config=AnalysisConfig(
+                    min_content_length=100,
+                    max_depth=10,
+                    track_classes=True,
+                    track_ids=True,
+                    extract_scripts=True,
+                )
+            )
+            self.change_detector = ChangeDetector(breaking_threshold=0.70)
+            # Store page structures for change detection
+            self._page_structures: dict[str, PageStructure] = {}
 
     async def discover_sitemaps(self) -> list[str]:
         """
@@ -246,6 +273,51 @@ class SitemapCrawler:
 
         return sorted(urls, key=priority_score, reverse=True)
 
+    def _classify_page_type(self, url: str) -> str:
+        """Classify the page type based on URL patterns."""
+        url_lower = url.lower()
+        if any(x in url_lower for x in ["/article", "/post", "/blog", "/news"]):
+            return "article"
+        elif any(x in url_lower for x in ["/category", "/tag", "/archive"]):
+            return "listing"
+        elif any(x in url_lower for x in ["/product", "/item", "/shop"]):
+            return "product"
+        elif url_lower.endswith("/") or url_lower.count("/") <= 3:
+            return "homepage"
+        return "content"
+
+    def _analyze_page_structure(
+        self,
+        html: str,
+        url: str,
+    ) -> tuple[PageStructure, ChangeAnalysis | None]:
+        """
+        Analyze page structure and detect changes.
+
+        Args:
+            html: Page HTML content
+            url: Page URL
+
+        Returns:
+            Tuple of (current structure, change analysis if previous exists)
+        """
+        page_type = self._classify_page_type(url)
+        current_structure = self.structure_analyzer.analyze(html, url, page_type)
+
+        # Check for changes if we have a previous structure
+        change_analysis = None
+        if url in self._page_structures:
+            previous_structure = self._page_structures[url]
+            change_analysis = self.change_detector.detect_changes(
+                previous_structure,
+                current_structure,
+            )
+
+        # Store current structure for future comparisons
+        self._page_structures[url] = current_structure
+
+        return current_structure, change_analysis
+
     async def crawl_urls(self, urls: list[SitemapURL]) -> dict[str, Any]:
         """
         Crawl the URLs and return results.
@@ -254,6 +326,11 @@ class SitemapCrawler:
         - Use the full Crawler class
         - Apply rate limiting
         - Store results properly
+
+        Fingerprinting features:
+        - Analyzes page structure for each URL
+        - Detects structural changes between crawls
+        - Classifies change severity (cosmetic, minor, moderate, breaking)
 
         Args:
             urls: Prioritized list of URLs to crawl
@@ -266,6 +343,11 @@ class SitemapCrawler:
             "success": 0,
             "failed": 0,
             "results": [],
+            "fingerprinting": {
+                "pages_analyzed": 0,
+                "changes_detected": 0,
+                "breaking_changes": 0,
+            } if self.enable_fingerprinting else None,
         }
 
         async with httpx.AsyncClient(
@@ -285,13 +367,57 @@ class SitemapCrawler:
 
                     response = await client.get(url.loc)
 
-                    stats["results"].append({
+                    result = {
                         "url": url.loc,
                         "status": response.status_code,
                         "content_length": len(response.content),
                         "priority": url.priority,
                         "lastmod": url.lastmod.isoformat() if url.lastmod else None,
-                    })
+                    }
+
+                    # Apply fingerprinting if enabled and HTML content
+                    if (self.enable_fingerprinting and
+                        response.status_code == 200 and
+                        "text/html" in response.headers.get("content-type", "")):
+
+                        structure, change_analysis = self._analyze_page_structure(
+                            response.text,
+                            url.loc,
+                        )
+
+                        stats["fingerprinting"]["pages_analyzed"] += 1
+
+                        # Add fingerprint info to result
+                        result["fingerprint"] = {
+                            "content_hash": structure.content_hash,
+                            "page_type": structure.page_type,
+                            "tag_count": sum(structure.tag_hierarchy.get("tag_counts", {}).values())
+                                if structure.tag_hierarchy else 0,
+                            "content_regions": len(structure.content_regions),
+                            "semantic_landmarks": list(structure.semantic_landmarks.keys())
+                                if structure.semantic_landmarks else [],
+                        }
+
+                        if change_analysis:
+                            stats["fingerprinting"]["changes_detected"] += 1
+                            if change_analysis.requires_relearning:
+                                stats["fingerprinting"]["breaking_changes"] += 1
+
+                            result["change_analysis"] = {
+                                "has_changes": change_analysis.has_changes,
+                                "classification": change_analysis.classification.value,
+                                "similarity_score": f"{change_analysis.similarity_score:.2%}",
+                                "requires_relearning": change_analysis.requires_relearning,
+                            }
+
+                            self.logger.info(
+                                "Structure change detected",
+                                url=url.loc,
+                                classification=change_analysis.classification.value,
+                                similarity=f"{change_analysis.similarity_score:.2%}",
+                            )
+
+                    stats["results"].append(result)
 
                     if response.status_code == 200:
                         stats["success"] += 1
@@ -408,6 +534,14 @@ def print_results(results: dict[str, Any]) -> None:
         print(f"  Success: {results['success']}")
         print(f"  Failed: {results['failed']}")
 
+    # Print fingerprinting statistics
+    if results.get("fingerprinting"):
+        fp_stats = results["fingerprinting"]
+        print(f"\nFingerprinting Analysis:")
+        print(f"  Pages analyzed: {fp_stats['pages_analyzed']}")
+        print(f"  Changes detected: {fp_stats['changes_detected']}")
+        print(f"  Breaking changes: {fp_stats['breaking_changes']}")
+
     if "urls" in results:
         print(f"\nTop URLs (by priority):")
         for i, url in enumerate(results["urls"][:10], 1):
@@ -415,6 +549,21 @@ def print_results(results: dict[str, Any]) -> None:
             lastmod = url.get("lastmod", "N/A")
             print(f"  {i}. {url['loc']}")
             print(f"     Priority: {priority}, Last Modified: {lastmod}")
+
+    # Print fingerprint details for results with fingerprinting
+    if "results" in results:
+        fingerprinted = [r for r in results["results"] if r.get("fingerprint")]
+        if fingerprinted:
+            print(f"\nFingerprint Details (first 5):")
+            for i, r in enumerate(fingerprinted[:5], 1):
+                fp = r["fingerprint"]
+                print(f"  {i}. {r['url'][:60]}...")
+                print(f"     Type: {fp['page_type']}, Tags: {fp['tag_count']}, "
+                      f"Regions: {fp['content_regions']}")
+                if r.get("change_analysis"):
+                    ca = r["change_analysis"]
+                    print(f"     Change: {ca['classification']} "
+                          f"(similarity: {ca['similarity_score']})")
 
     print("=" * 60)
 
@@ -454,6 +603,11 @@ async def main() -> None:
         help="Just list URLs from sitemap (no crawling)",
     )
     parser.add_argument(
+        "--no-fingerprint",
+        action="store_true",
+        help="Disable structure fingerprinting",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging",
@@ -479,6 +633,8 @@ async def main() -> None:
     3. Handle gzip-compressed sitemaps
     4. Use sitemap metadata (priority, lastmod, changefreq)
     5. Prioritize URLs for efficient crawling
+    6. Fingerprint page structures for change detection
+    7. Detect structural changes between crawls
 
     """)
 
@@ -487,6 +643,7 @@ async def main() -> None:
         max_urls=args.max_urls,
         priority_threshold=args.priority_threshold,
         recent_days=args.recent_days,
+        enable_fingerprinting=not args.no_fingerprint,
     )
 
     try:
