@@ -116,7 +116,10 @@ class CrawlerSettings(BaseSettings):
     ccpa_enabled: bool = True
     ccpa_honor_gpc: bool = True
 
-    # Legal
+    # Legal / CFAA
+    cfaa_enabled: bool = True
+    cfaa_tos_analysis_enabled: bool = True  # Analyze Terms of Service by default
+    cfaa_block_on_restrictive_tos: bool = True
     dpo_email: str = ""
     legal_blocklist_path: str = "/etc/crawler/legal_blocklist.txt"
 
@@ -193,6 +196,28 @@ class CCPAConfig:
     deletion_verification: bool = True
     honor_gpc_header: bool = True
     do_not_sell: bool = True
+
+
+@dataclass
+class CFAAConfig:
+    """CFAA (Computer Fraud and Abuse Act) compliance configuration."""
+
+    enabled: bool = True
+    tos_analysis_enabled: bool = True  # Analyze Terms of Service by default
+    tos_cache_ttl: int = 86400  # Cache ToS analysis for 24 hours
+    block_on_restrictive_tos: bool = True  # Block crawling if ToS prohibits it
+    tos_fetch_timeout: float = 30.0  # Timeout for fetching ToS pages
+    common_tos_paths: list[str] = field(
+        default_factory=lambda: [
+            "/terms",
+            "/terms-of-service",
+            "/tos",
+            "/legal/terms",
+            "/terms-and-conditions",
+            "/terms-of-use",
+        ]
+    )
+    blocklist_path: str = ""  # Path to domain blocklist file
 
 
 @dataclass
@@ -280,6 +305,7 @@ class CrawlConfig:
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
     safety: SafetyLimits = field(default_factory=SafetyLimits)
     security: SecurityConfig = field(default_factory=SecurityConfig)
+    cfaa: CFAAConfig = field(default_factory=CFAAConfig)
     gdpr: GDPRConfig = field(default_factory=GDPRConfig)
     ccpa: CCPAConfig = field(default_factory=CCPAConfig)
     pii: PIIHandlingConfig = field(default_factory=PIIHandlingConfig)
@@ -390,7 +416,21 @@ def _parse_yaml_config(data: dict) -> CrawlConfig:
         honor_gpc_header=ccpa_data.get("honor_gpc_header", True),
         do_not_sell=ccpa_data.get("do_not_sell", True),
     )
-    
+
+    cfaa_data = data.get("cfaa", {})
+    cfaa = CFAAConfig(
+        enabled=cfaa_data.get("enabled", True),
+        tos_analysis_enabled=cfaa_data.get("tos_analysis_enabled", True),
+        tos_cache_ttl=cfaa_data.get("tos_cache_ttl", 86400),
+        block_on_restrictive_tos=cfaa_data.get("block_on_restrictive_tos", True),
+        tos_fetch_timeout=cfaa_data.get("tos_fetch_timeout", 30.0),
+        common_tos_paths=cfaa_data.get("common_tos_paths", [
+            "/terms", "/terms-of-service", "/tos", "/legal/terms",
+            "/terms-and-conditions", "/terms-of-use",
+        ]),
+        blocklist_path=cfaa_data.get("blocklist_path", ""),
+    )
+
     pii_data = data.get("pii", {})
     pii = PIIHandlingConfig(
         action=PIIHandling(pii_data.get("action", "redact")),
@@ -461,6 +501,7 @@ def _parse_yaml_config(data: dict) -> CrawlConfig:
         rate_limit=rate_limit,
         safety=safety,
         security=security,
+        cfaa=cfaa,
         gdpr=gdpr,
         ccpa=ccpa,
         pii=pii,
@@ -531,6 +572,12 @@ def save_yaml_config(config: CrawlConfig, config_path: str) -> None:
             "enabled": config.gdpr.enabled,
             "lawful_basis": config.gdpr.lawful_basis.value,
             "retention_days": config.gdpr.retention_days,
+        },
+        "cfaa": {
+            "enabled": config.cfaa.enabled,
+            "tos_analysis_enabled": config.cfaa.tos_analysis_enabled,
+            "block_on_restrictive_tos": config.cfaa.block_on_restrictive_tos,
+            "tos_cache_ttl": config.cfaa.tos_cache_ttl,
         },
         "ccpa": {
             "enabled": config.ccpa.enabled,
