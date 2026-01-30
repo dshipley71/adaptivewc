@@ -3,7 +3,7 @@
 Scheduled Recrawling Example
 
 Demonstrates how to use the scheduled recrawling system for periodic
-URL monitoring and change detection.
+URL monitoring with structure fingerprinting for detailed change detection.
 
 Features demonstrated:
 - Cron expression scheduling
@@ -12,6 +12,8 @@ Features demonstrated:
 - Sitemap-based scheduling (uses changefreq/lastmod hints)
 - Schedule management (add, list, enable/disable, remove)
 - Change detection callback
+- Structure fingerprinting for each crawled page
+- Change classification (cosmetic, minor, moderate, breaking)
 
 Usage:
     # Start Redis first
@@ -30,11 +32,14 @@ Usage:
     # List all schedules
     python examples/scheduled_recrawl_example.py list
 
-    # Run the scheduler
+    # Run the scheduler (with fingerprinting)
     python examples/scheduled_recrawl_example.py run
 
     # Run demo with adaptive scheduling
     python examples/scheduled_recrawl_example.py demo
+
+    # Disable fingerprinting
+    python examples/scheduled_recrawl_example.py demo --no-fingerprint
 
 Requirements:
     - Redis running on localhost:6379
@@ -62,29 +67,60 @@ from crawler.core.recrawl_scheduler import (
     AdaptiveScheduleConfig,
     SitemapBasedScheduler,
 )
+from crawler.adaptive.structure_analyzer import StructureAnalyzer, AnalysisConfig
+from crawler.adaptive.change_detector import ChangeDetector, ChangeAnalysis, ChangeClassification
+from crawler.models import PageStructure
 from crawler.utils.logging import CrawlerLogger, setup_logging
 
 
 class ScheduledRecrawlDemo:
     """
-    Demonstrates scheduled recrawling capabilities.
+    Demonstrates scheduled recrawling capabilities with structure fingerprinting.
 
     Key concepts:
     - URLs can be scheduled for periodic recrawling
     - Cron expressions provide precise scheduling
     - Adaptive scheduling adjusts frequency based on change rate
     - Sitemap hints (changefreq) inform initial schedules
+    - Structure fingerprinting detects both content and structural changes
+    - Change classification (cosmetic, minor, moderate, breaking) informs scheduling
     """
 
-    def __init__(self, redis_url: str = "redis://localhost:6379/0"):
-        """Initialize the demo."""
+    def __init__(
+        self,
+        redis_url: str = "redis://localhost:6379/0",
+        enable_fingerprinting: bool = True,
+    ):
+        """
+        Initialize the demo.
+
+        Args:
+            redis_url: Redis connection URL
+            enable_fingerprinting: Enable structure fingerprinting for change detection
+        """
         self.redis_url = redis_url
+        self.enable_fingerprinting = enable_fingerprinting
         self.logger = CrawlerLogger("scheduled_recrawl_demo")
         self.redis_client: redis.Redis | None = None
         self.scheduler: RecrawlScheduler | None = None
 
-        # Track content for change detection
+        # Track content for change detection (legacy - simple hash)
         self._content_hashes: dict[str, str] = {}
+
+        # Initialize fingerprinting for structural change detection
+        if enable_fingerprinting:
+            self.structure_analyzer = StructureAnalyzer(
+                config=AnalysisConfig(
+                    min_content_length=100,
+                    max_depth=10,
+                    track_classes=True,
+                    track_ids=True,
+                    extract_scripts=True,
+                )
+            )
+            self.change_detector = ChangeDetector(breaking_threshold=0.70)
+            # Store page structures for change detection
+            self._page_structures: dict[str, PageStructure] = {}
 
     async def connect(self) -> None:
         """Connect to Redis and initialize scheduler."""
@@ -228,13 +264,26 @@ class ScheduledRecrawlDemo:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] "
                   f"Processing: {schedule.url}")
 
-            # Fetch and check for changes
-            changed = await self._check_url_for_changes(schedule.url)
+            # Fetch and check for changes (with fingerprinting if enabled)
+            changed, change_details = await self._check_url_for_changes(schedule.url)
 
             if changed:
                 print(f"  -> CHANGED! Content was modified.")
             else:
                 print(f"  -> No changes detected.")
+
+            # Show fingerprinting details if available
+            if change_details:
+                print(f"  -> Page type: {change_details.get('page_type', 'unknown')}")
+                print(f"  -> Tag count: {change_details.get('tag_count', 0)}")
+                print(f"  -> Content regions: {change_details.get('content_regions', 0)}")
+
+                if "structural_change" in change_details:
+                    sc = change_details["structural_change"]
+                    print(f"  -> Structural change: {sc['classification']} "
+                          f"(similarity: {sc['similarity_score']})")
+                    if sc["requires_relearning"]:
+                        print(f"  -> ⚠️  Extraction strategy may need updating!")
 
             # Record result (updates adaptive interval)
             await self.scheduler.record_crawl_result(
@@ -291,41 +340,104 @@ class ScheduledRecrawlDemo:
 
         return min(enabled, key=lambda s: s.next_crawl)
 
-    async def _check_url_for_changes(self, url: str) -> bool:
+    def _classify_page_type(self, url: str) -> str:
+        """Classify the page type based on URL patterns."""
+        url_lower = url.lower()
+        if any(x in url_lower for x in ["/article", "/post", "/blog", "/news"]):
+            return "article"
+        elif any(x in url_lower for x in ["/category", "/tag", "/archive"]):
+            return "listing"
+        elif any(x in url_lower for x in ["/product", "/item", "/shop"]):
+            return "product"
+        elif url_lower.endswith("/") or url_lower.count("/") <= 3:
+            return "homepage"
+        return "content"
+
+    async def _check_url_for_changes(self, url: str) -> tuple[bool, dict | None]:
         """
         Check if a URL's content has changed.
 
-        Uses content hashing for simple change detection.
+        Uses both content hashing (simple) and structure fingerprinting (detailed)
+        for comprehensive change detection.
 
         Args:
             url: URL to check
 
         Returns:
-            True if content changed, False otherwise
+            Tuple of (changed: bool, change_details: dict or None)
         """
+        change_details = None
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(url)
 
                 if response.status_code != 200:
-                    return False
+                    return False, None
 
-                # Compute content hash
+                # Compute content hash (simple change detection)
                 content_hash = hashlib.sha256(response.content).hexdigest()
 
-                # Check for change
+                # Check for basic content change
                 previous_hash = self._content_hashes.get(url)
                 self._content_hashes[url] = content_hash
+                content_changed = previous_hash is None or previous_hash != content_hash
+
+                # Structure fingerprinting (detailed change detection)
+                if self.enable_fingerprinting and "text/html" in response.headers.get("content-type", ""):
+                    page_type = self._classify_page_type(url)
+                    current_structure = self.structure_analyzer.analyze(
+                        response.text, url, page_type
+                    )
+
+                    change_details = {
+                        "content_hash": content_hash,
+                        "page_type": current_structure.page_type,
+                        "tag_count": sum(current_structure.tag_hierarchy.get("tag_counts", {}).values())
+                            if current_structure.tag_hierarchy else 0,
+                        "content_regions": len(current_structure.content_regions),
+                    }
+
+                    # Check structural changes
+                    if url in self._page_structures:
+                        previous_structure = self._page_structures[url]
+                        change_analysis = self.change_detector.detect_changes(
+                            previous_structure,
+                            current_structure,
+                        )
+
+                        change_details["structural_change"] = {
+                            "has_changes": change_analysis.has_changes,
+                            "classification": change_analysis.classification.value,
+                            "similarity_score": f"{change_analysis.similarity_score:.2%}",
+                            "requires_relearning": change_analysis.requires_relearning,
+                        }
+
+                        # Log structural changes
+                        if change_analysis.has_changes:
+                            self.logger.info(
+                                "Structure change detected",
+                                url=url,
+                                classification=change_analysis.classification.value,
+                                similarity=f"{change_analysis.similarity_score:.2%}",
+                            )
+
+                            # Breaking changes are more significant
+                            if change_analysis.classification == ChangeClassification.BREAKING:
+                                print(f"  ⚠️  BREAKING structural change detected!")
+
+                    # Store current structure
+                    self._page_structures[url] = current_structure
 
                 if previous_hash is None:
                     # First time seeing this URL
-                    return True  # Treat as "changed" for initial crawl
+                    return True, change_details
 
-                return previous_hash != content_hash
+                return content_changed, change_details
 
         except Exception as e:
             self.logger.error("Failed to check URL", url=url, error=str(e))
-            return False
+            return False, None
 
     async def demo_cron_parsing(self) -> None:
         """Demonstrate cron expression parsing."""
@@ -472,6 +584,7 @@ async def main() -> None:
 
     # Global options
     parser.add_argument("--redis-url", type=str, default="redis://localhost:6379/0")
+    parser.add_argument("--no-fingerprint", action="store_true", help="Disable structure fingerprinting")
     parser.add_argument("--verbose", action="store_true")
 
     args = parser.parse_args()
@@ -499,13 +612,18 @@ async def main() -> None:
     2. Use cron expressions for precise timing
     3. Use adaptive scheduling based on change frequency
     4. Monitor and detect content changes
+    5. Fingerprint page structures for detailed change detection
+    6. Classify structural changes (cosmetic, minor, moderate, breaking)
 
     Prerequisites:
       docker run -d -p 6379:6379 redis:7-alpine
 
     """)
 
-    demo = ScheduledRecrawlDemo(redis_url=args.redis_url)
+    demo = ScheduledRecrawlDemo(
+        redis_url=args.redis_url,
+        enable_fingerprinting=not args.no_fingerprint,
+    )
 
     try:
         await demo.connect()

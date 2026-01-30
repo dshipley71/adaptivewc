@@ -4,7 +4,8 @@ JavaScript Rendering Example
 
 Demonstrates how to use Playwright integration to render JavaScript-heavy
 pages, including SPAs (Single Page Applications) built with React, Vue,
-Angular, and similar frameworks.
+Angular, and similar frameworks. Includes structure fingerprinting to
+compare HTTP vs JS-rendered content.
 
 Features demonstrated:
 - Rendering pages with JavaScript execution
@@ -13,6 +14,8 @@ Features demonstrated:
 - Browser pool management for high-volume rendering
 - Hybrid fetching (HTTP + JS when needed)
 - Screenshot capture
+- Structure fingerprinting for HTTP vs JS comparison
+- Change detection between render modes
 
 Usage:
     # First, install Playwright
@@ -25,8 +28,11 @@ Usage:
     # With screenshot
     python examples/js_rendering_example.py --url https://example.com --screenshot
 
-    # Compare HTTP vs JS rendering
+    # Compare HTTP vs JS rendering (with fingerprinting)
     python examples/js_rendering_example.py --url https://example.com --compare
+
+    # Disable fingerprinting
+    python examples/js_rendering_example.py --url https://example.com --no-fingerprint
 
 Requirements:
     - pip install -e ".[js-rendering]"
@@ -51,24 +57,49 @@ from crawler.core.renderer import (
     RenderResult,
     WaitStrategy,
 )
+from crawler.adaptive.structure_analyzer import StructureAnalyzer, AnalysisConfig
+from crawler.adaptive.change_detector import ChangeDetector, ChangeAnalysis
+from crawler.models import PageStructure
 from crawler.utils.logging import CrawlerLogger, setup_logging
 
 
 class JSRenderingDemo:
     """
-    Demonstrates JavaScript rendering capabilities.
+    Demonstrates JavaScript rendering capabilities with fingerprinting.
 
     Key concepts:
     - Modern SPAs render content via JavaScript
     - Simple HTTP fetch returns only the initial HTML (often empty)
     - JS rendering executes JavaScript to get the full content
     - Auto-detection identifies when JS rendering is needed
+    - Structure fingerprinting tracks page changes between renders
     """
 
-    def __init__(self, verbose: bool = False):
-        """Initialize the demo."""
+    def __init__(self, verbose: bool = False, enable_fingerprinting: bool = True):
+        """
+        Initialize the demo.
+
+        Args:
+            verbose: Enable verbose logging
+            enable_fingerprinting: Enable structure fingerprinting for change detection
+        """
         self.logger = CrawlerLogger("js_rendering_demo")
         self.verbose = verbose
+        self.enable_fingerprinting = enable_fingerprinting
+
+        # Initialize fingerprinting components
+        if enable_fingerprinting:
+            self.structure_analyzer = StructureAnalyzer(
+                config=AnalysisConfig(
+                    min_content_length=100,
+                    max_depth=10,
+                    track_classes=True,
+                    track_ids=True,
+                    extract_scripts=True,
+                )
+            )
+            self.change_detector = ChangeDetector(breaking_threshold=0.70)
+            self._page_structures: dict[str, PageStructure] = {}
 
     async def render_page(
         self,
@@ -189,7 +220,7 @@ class JSRenderingDemo:
             for indicator in indicators:
                 print(f"  - {indicator}")
 
-        return {
+        result = {
             "url": url,
             "http_length": http_length,
             "js_length": js_length,
@@ -199,6 +230,69 @@ class JSRenderingDemo:
             "needs_js": needs_js,
             "indicators": indicators,
         }
+
+        # Structure fingerprinting comparison
+        if self.enable_fingerprinting:
+            print(f"\n{'='*60}")
+            print("STRUCTURE FINGERPRINTING COMPARISON")
+            print(f"{'='*60}")
+
+            # Analyze HTTP version structure
+            http_structure = self.structure_analyzer.analyze(
+                http_html, url, page_type="http_fetch"
+            )
+
+            # Analyze JS-rendered version structure
+            js_structure = self.structure_analyzer.analyze(
+                js_result.html, url, page_type="js_rendered"
+            )
+
+            # Compare structures
+            structure_diff = self.change_detector.detect_changes(
+                http_structure, js_structure
+            )
+
+            print("\nHTTP Fetch Structure:")
+            print(f"  Content hash: {http_structure.content_hash[:16]}...")
+            print(f"  Tag count: {sum(http_structure.tag_hierarchy.get('tag_counts', {}).values()) if http_structure.tag_hierarchy else 0}")
+            print(f"  Content regions: {len(http_structure.content_regions)}")
+            print(f"  Semantic landmarks: {list(http_structure.semantic_landmarks.keys()) if http_structure.semantic_landmarks else []}")
+
+            print("\nJS Rendered Structure:")
+            print(f"  Content hash: {js_structure.content_hash[:16]}...")
+            print(f"  Tag count: {sum(js_structure.tag_hierarchy.get('tag_counts', {}).values()) if js_structure.tag_hierarchy else 0}")
+            print(f"  Content regions: {len(js_structure.content_regions)}")
+            print(f"  Semantic landmarks: {list(js_structure.semantic_landmarks.keys()) if js_structure.semantic_landmarks else []}")
+
+            print(f"\nStructure Difference:")
+            print(f"  Has changes: {structure_diff.has_changes}")
+            print(f"  Classification: {structure_diff.classification.value}")
+            print(f"  Similarity score: {structure_diff.similarity_score:.2%}")
+
+            if structure_diff.requires_relearning:
+                print(f"  ⚠️  BREAKING CHANGE: Structure significantly different!")
+                print(f"     JS rendering reveals content not in HTTP fetch")
+
+            result["fingerprinting"] = {
+                "http_structure": {
+                    "content_hash": http_structure.content_hash,
+                    "tag_count": sum(http_structure.tag_hierarchy.get('tag_counts', {}).values()) if http_structure.tag_hierarchy else 0,
+                    "content_regions": len(http_structure.content_regions),
+                },
+                "js_structure": {
+                    "content_hash": js_structure.content_hash,
+                    "tag_count": sum(js_structure.tag_hierarchy.get('tag_counts', {}).values()) if js_structure.tag_hierarchy else 0,
+                    "content_regions": len(js_structure.content_regions),
+                },
+                "difference": {
+                    "has_changes": structure_diff.has_changes,
+                    "classification": structure_diff.classification.value,
+                    "similarity_score": structure_diff.similarity_score,
+                    "requires_relearning": structure_diff.requires_relearning,
+                },
+            }
+
+        return result
 
     async def demo_smart_rendering(self, url: str) -> RenderResult:
         """
@@ -418,6 +512,11 @@ async def main() -> None:
         help="Output directory for screenshots",
     )
     parser.add_argument(
+        "--no-fingerprint",
+        action="store_true",
+        help="Disable structure fingerprinting",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging",
@@ -443,6 +542,8 @@ async def main() -> None:
     3. Use different wait strategies
     4. Manage browser pools for concurrency
     5. Capture screenshots
+    6. Compare HTTP vs JS structure fingerprints
+    7. Detect structural differences between render modes
 
     Prerequisites:
       pip install playwright
@@ -460,7 +561,10 @@ async def main() -> None:
         print("  playwright install chromium")
         sys.exit(1)
 
-    demo = JSRenderingDemo(verbose=args.verbose)
+    demo = JSRenderingDemo(
+        verbose=args.verbose,
+        enable_fingerprinting=not args.no_fingerprint,
+    )
 
     try:
         if args.compare:
