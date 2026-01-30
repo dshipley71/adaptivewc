@@ -27,22 +27,363 @@ An intelligent, compliance-first web crawler with ML-based structure learning th
 ## Features
 
 ### Compliance & Legal
-- **CFAA Compliance**: Authorization checks before every request
-- **GDPR/CCPA Support**: PII detection, redaction, and configurable retention policies
-- **robots.txt Respect**: Full RFC 9309 compliance with Crawl-delay support
-- **Anti-Bot Respect**: Treats bot detection as "access denied" (never attempts evasion)
+
+The crawler is designed with legal compliance as a first-class priority, ensuring your web scraping operations remain within legal boundaries.
+
+#### CFAA Compliance (Computer Fraud and Abuse Act)
+
+The CFAA is a U.S. federal law that prohibits unauthorized access to computer systems. The crawler implements authorization checks before every request:
+
+```python
+from crawler.legal import CFAAChecker
+
+checker = CFAAChecker()
+
+# Check if crawling is authorized
+result = await checker.is_authorized("https://example.com/page")
+if result.authorized:
+    print("Crawling is authorized")
+else:
+    print(f"Blocked: {result.reason}")
+    # Possible reasons:
+    # - "Terms of service explicitly prohibit crawling"
+    # - "Login-required content without authorization"
+    # - "Previously received cease-and-desist"
+```
+
+**Authorization indicators the crawler checks:**
+- Public accessibility (no authentication required)
+- Presence of robots.txt (indicates expectation of bots)
+- Meta tags allowing/disallowing indexing
+- Terms of service analysis (when enabled)
+- Previous crawl history and any blocks received
+
+#### GDPR/CCPA Support
+
+The General Data Protection Regulation (GDPR) and California Consumer Privacy Act (CCPA) require special handling of personal data. The crawler provides:
+
+```python
+from crawler.legal import PIIDetector, PIIHandler
+from crawler.config import GDPRConfig, PIIHandlingConfig
+
+# Configure GDPR compliance
+gdpr_config = GDPRConfig(
+    enabled=True,
+    retention_days=365,           # Auto-delete data after 1 year
+    collect_only=["url", "title", "content"],  # Whitelist fields
+    exclude_countries=["EU"],     # Optional: skip EU-based sites
+)
+
+# Configure PII handling
+pii_config = PIIHandlingConfig(
+    action="redact",              # Options: "redact", "pseudonymize", "exclude_page"
+    patterns=[
+        r"\b\d{3}-\d{2}-\d{4}\b",  # SSN pattern
+        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",  # Email
+        r"\b\d{16}\b",             # Credit card
+    ],
+    log_detections=True,          # Audit trail for compliance
+)
+
+# Detect PII in content
+detector = PIIDetector()
+findings = detector.scan(html_content)
+for finding in findings:
+    print(f"Found {finding.pii_type} at position {finding.start}-{finding.end}")
+    # Output: Found EMAIL at position 1234-1256
+
+# Handle PII according to policy
+handler = PIIHandler(pii_config)
+clean_content = handler.process(html_content)
+```
+
+#### robots.txt Respect (RFC 9309)
+
+The crawler fully implements the robots.txt standard including the latest RFC 9309 specification:
+
+```python
+from crawler.compliance import RobotsChecker
+
+checker = RobotsChecker(
+    user_agent="MyCrawler/1.0",
+    cache_ttl=3600,  # Cache robots.txt for 1 hour
+)
+
+# Check if path is allowed
+allowed = await checker.is_allowed("https://example.com/private/page")
+print(f"Allowed: {allowed}")
+
+# Get crawl delay
+delay = await checker.get_crawl_delay("https://example.com")
+print(f"Crawl-delay: {delay} seconds")
+
+# Get sitemap URLs from robots.txt
+sitemaps = await checker.get_sitemaps("https://example.com")
+print(f"Sitemaps: {sitemaps}")
+```
+
+**Supported robots.txt directives:**
+- `User-agent` - Matches crawler identity
+- `Allow` / `Disallow` - Path-based access control
+- `Crawl-delay` - Per-domain rate limiting
+- `Sitemap` - Sitemap discovery
+- Wildcard patterns (`*`, `$`)
+
+#### Anti-Bot Respect
+
+Unlike aggressive scrapers, this crawler treats bot detection as "access denied" and never attempts evasion:
+
+```python
+# The crawler automatically detects and respects:
+# - CAPTCHA challenges → marks URL as blocked
+# - JavaScript challenges (Cloudflare, etc.) → marks as blocked
+# - Rate limit responses (429) → backs off exponentially
+# - IP blocks → stops crawling that domain
+
+# You can check if a domain has blocked the crawler:
+from crawler.compliance import BlockedDomainTracker
+
+tracker = BlockedDomainTracker(redis_client)
+if await tracker.is_blocked("example.com"):
+    print("Domain has blocked our crawler")
+    print(f"Blocked since: {await tracker.get_block_time('example.com')}")
+    print(f"Reason: {await tracker.get_block_reason('example.com')}")
+```
 
 ### Intelligent Crawling
-- **Adaptive Rate Limiting**: Per-domain limits with automatic backoff on 429/503
-- **Structure Learning**: ML-based DOM analysis that learns page layouts
-- **Change Detection**: Detects site redesigns, class renames, element relocations
-- **Auto-Adaptation**: Automatically re-learns extraction strategies when sites change
+
+#### Adaptive Rate Limiting
+
+The crawler automatically adjusts request rates based on server responses:
+
+```python
+from crawler.compliance import AdaptiveRateLimiter
+
+limiter = AdaptiveRateLimiter(
+    default_delay=1.0,    # Start with 1 second between requests
+    min_delay=0.5,        # Never go faster than 0.5 seconds
+    max_delay=60.0,       # Never wait more than 60 seconds
+    backoff_factor=2.0,   # Double delay on rate limit
+    recovery_factor=0.9,  # Slowly recover after success
+)
+
+# The limiter automatically tracks per-domain delays
+async with limiter.acquire("example.com"):
+    # Make request here
+    response = await fetch(url)
+
+    # Report response for adaptive adjustment
+    if response.status_code == 429:
+        limiter.report_rate_limited("example.com")
+        # Delay automatically increases
+    elif response.status_code == 503:
+        limiter.report_server_overload("example.com")
+        # Delay automatically increases
+    else:
+        limiter.report_success("example.com")
+        # Delay slowly decreases toward default
+```
+
+#### Structure Learning
+
+The ML-based DOM analysis learns page layouts automatically:
+
+```python
+from crawler.adaptive import StructureAnalyzer, StructureLearner
+
+analyzer = StructureAnalyzer()
+
+# Analyze page structure
+structure = analyzer.analyze(
+    html=html_content,
+    url="https://example.com/article/123",
+    page_type="article",
+)
+
+# The structure contains:
+print(f"Domain: {structure.domain}")
+print(f"Tag hierarchy: {structure.tag_hierarchy}")
+print(f"CSS classes: {structure.css_class_map}")
+print(f"Element IDs: {structure.id_attributes}")
+print(f"Semantic landmarks: {structure.semantic_landmarks}")
+print(f"Content regions: {structure.content_regions}")
+print(f"Navigation selectors: {structure.navigation_selectors}")
+
+# Learn extraction strategy
+learner = StructureLearner()
+strategy = learner.infer(html_content, structure)
+
+print(f"Title selector: {strategy.title.selector} (confidence: {strategy.title.confidence})")
+print(f"Content selector: {strategy.content.selector} (confidence: {strategy.content.confidence})")
+```
+
+#### Change Detection
+
+Automatically detects when websites change their structure:
+
+```python
+from crawler.adaptive import ChangeDetector, ChangeClassification
+
+detector = ChangeDetector()
+
+# Compare old and new structures
+analysis = detector.detect_changes(old_structure, new_structure)
+
+print(f"Has changes: {analysis.has_changes}")
+print(f"Similarity: {analysis.similarity_score:.2%}")
+print(f"Classification: {analysis.classification.name}")
+
+# Classification levels:
+# COSMETIC (≥95%): CSS-only changes, no action needed
+# MINOR (85-95%): Small tweaks, keep strategy
+# MODERATE (70-85%): Significant changes, consider adapting
+# BREAKING (<70%): Major redesign, must re-learn strategy
+
+# Get detailed change information
+for change in analysis.changes:
+    print(f"  - {change.change_type}: {change.description}")
+    # Examples:
+    # - TAG_COUNT_CHANGED: div count changed from 45 to 52
+    # - CLASS_RENAMED: .article-content → .post-body
+    # - ELEMENT_MOVED: #sidebar moved from right to left
+    # - LANDMARK_ADDED: New <aside> element detected
+```
 
 ### Production Ready
-- **Redis-Backed Persistence**: Learned structures survive restarts
-- **Structured Logging**: Full audit trail of all operations
-- **Circuit Breakers**: Automatic failure isolation per domain
-- **Parallel Crawling**: Configurable concurrency with domain politeness
+
+#### Redis-Backed Persistence
+
+All learned structures and strategies are stored in Redis for persistence:
+
+```python
+from crawler.storage import StructureStore
+
+store = StructureStore(redis_url="redis://localhost:6379/0")
+
+# Save structure
+await store.save_structure("example.com", "article", structure)
+
+# Load structure
+stored = await store.get_structure("example.com", "article")
+
+# Get structure history (for rollback)
+history = await store.get_history("example.com", "article", limit=10)
+for version in history:
+    print(f"Version {version.version} at {version.timestamp}")
+
+# Rollback to previous version
+await store.rollback("example.com", "article", version=3)
+
+# Structure TTL and expiration
+await store.set_ttl("example.com", "article", seconds=604800)  # 7 days
+```
+
+#### Structured Logging
+
+Complete audit trail of all operations:
+
+```python
+import structlog
+from crawler.utils import configure_logging
+
+# Configure structured logging
+configure_logging(
+    level="INFO",
+    format="json",  # or "console" for development
+    output="crawler.log",
+)
+
+log = structlog.get_logger()
+
+# All crawler operations are logged with context
+log.info("page_crawled",
+    url="https://example.com/page",
+    status_code=200,
+    content_length=15234,
+    extraction_success=True,
+    selectors_used=["h1.title", "article.content"],
+)
+
+# Compliance events are logged for audit
+log.info("robots_check",
+    url="https://example.com/private",
+    allowed=False,
+    reason="Disallow: /private",
+)
+
+log.info("pii_detected",
+    url="https://example.com/page",
+    pii_type="EMAIL",
+    action="redacted",
+    count=3,
+)
+```
+
+#### Circuit Breakers
+
+Automatic failure isolation per domain prevents cascading failures:
+
+```python
+from crawler.utils import CircuitBreaker
+
+breaker = CircuitBreaker(
+    failure_threshold=5,     # Open after 5 failures
+    recovery_timeout=60,     # Try again after 60 seconds
+    half_open_requests=3,    # Allow 3 test requests when half-open
+)
+
+async def fetch_with_circuit_breaker(url: str):
+    domain = get_domain(url)
+
+    if breaker.is_open(domain):
+        raise CircuitOpenError(f"Circuit open for {domain}")
+
+    try:
+        response = await fetch(url)
+        breaker.record_success(domain)
+        return response
+    except Exception as e:
+        breaker.record_failure(domain)
+        raise
+
+# Check circuit status
+status = breaker.get_status("example.com")
+print(f"State: {status.state}")  # CLOSED, OPEN, or HALF_OPEN
+print(f"Failures: {status.failure_count}")
+print(f"Last failure: {status.last_failure_time}")
+```
+
+#### Parallel Crawling
+
+Configurable concurrency with domain politeness:
+
+```python
+from crawler.core import ConcurrencyManager
+
+manager = ConcurrencyManager(
+    global_limit=50,          # Max 50 concurrent requests total
+    per_domain_limit=5,       # Max 5 concurrent requests per domain
+    per_ip_limit=10,          # Max 10 concurrent requests per IP
+)
+
+async def crawl_with_limits(urls: list[str]):
+    async with manager:
+        tasks = []
+        for url in urls:
+            # This automatically respects all limits
+            task = manager.submit(fetch, url)
+            tasks.append(task)
+
+        results = await asyncio.gather(*tasks)
+
+    return results
+
+# Monitor concurrency
+stats = manager.get_stats()
+print(f"Active requests: {stats.active_count}")
+print(f"Queued requests: {stats.queued_count}")
+print(f"Domains active: {stats.domains_active}")
+```
 
 ### Advanced Crawling
 - **Sitemap Processing**: Full XML sitemap support with recursive index handling and gzip decompression
@@ -119,10 +460,21 @@ Every URL request passes through a strict compliance pipeline:
 
 ### Prerequisites
 
-- Python 3.11+
-- Redis (for adaptive features)
+| Requirement | Version | Purpose |
+|-------------|---------|---------|
+| Python | 3.11+ | Runtime environment |
+| Redis | 7.0+ | Structure persistence, rate limiting, distributed features |
+| Docker (optional) | 20.0+ | Easiest way to run Redis |
+
+**Verify Python version:**
+```bash
+python --version
+# Should output: Python 3.11.x or higher
+```
 
 ### Installation
+
+#### Step 1: Clone and Setup Environment
 
 ```bash
 # Clone the repository
@@ -131,42 +483,363 @@ cd adaptive-crawler
 
 # Create virtual environment
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Install with development dependencies
+# Activate virtual environment
+# On Linux/macOS:
+source .venv/bin/activate
+# On Windows (Command Prompt):
+.venv\Scripts\activate.bat
+# On Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+
+# Verify activation (should show path to .venv)
+which python  # Linux/macOS
+where python  # Windows
+```
+
+#### Step 2: Install Dependencies
+
+```bash
+# Basic installation
+pip install -e .
+
+# With development dependencies (testing, linting)
 pip install -e ".[dev]"
+
+# With ML features (embeddings, classification)
+pip install -e ".[ml]"
+
+# With LLM support (OpenAI, Anthropic, Ollama)
+pip install -e ".[llm]"
+
+# With JavaScript rendering (Playwright)
+pip install -e ".[js-rendering]"
+playwright install chromium
+
+# Everything
+pip install -e ".[dev,ml,llm,js-rendering]"
+```
+
+#### Step 3: Verify Installation
+
+```bash
+# Check the crawler is installed
+python -c "import crawler; print(f'Crawler version: {crawler.__version__}')"
+
+# Run module check
+python -m crawler --help
+```
+
+**Expected output:**
+```
+usage: crawler [-h] --seed-url URL [--output DIR] [--max-depth N]
+               [--max-pages N] [--rate-limit SECONDS] ...
+
+Adaptive Web Crawler - Intelligent, compliance-first web crawling
 ```
 
 ### Start Redis
 
-Choose one option:
+Redis is required for the adaptive features (structure learning, change detection, rate limiting).
+
+#### Option 1: Docker (Recommended)
 
 ```bash
-# Option 1: Docker (recommended)
-docker run -d -p 6379:6379 redis:7-alpine
+# Start Redis container
+docker run -d --name redis-crawler -p 6379:6379 redis:7-alpine
 
-# Option 2: Local install (Debian/Ubuntu)
+# Verify it's running
+docker ps | grep redis-crawler
+
+# Check Redis is responding
+docker exec redis-crawler redis-cli ping
+# Should output: PONG
+
+# View logs if needed
+docker logs redis-crawler
+```
+
+#### Option 2: Docker Compose
+
+Create `docker-compose.yml`:
+```yaml
+version: '3.8'
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  redis_data:
+```
+
+```bash
+docker-compose up -d
+docker-compose ps  # Verify status
+```
+
+#### Option 3: Local Installation
+
+**Debian/Ubuntu:**
+```bash
 curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/redis.list
-sudo apt-get update && sudo apt-get install -y redis-stack-server
+sudo apt-get update
+sudo apt-get install -y redis-server
 
-# Option 3: Start existing installation
-redis-server --daemonize yes
+# Start Redis
+sudo systemctl start redis-server
+sudo systemctl enable redis-server
+
+# Verify
+redis-cli ping
+```
+
+**macOS (Homebrew):**
+```bash
+brew install redis
+brew services start redis
+redis-cli ping
+```
+
+**Windows:**
+```powershell
+# Using Windows Subsystem for Linux (WSL) is recommended
+# Or use Docker Desktop for Windows
+```
+
+#### Verify Redis Connection
+
+```bash
+# Test connection from Python
+python -c "
+import redis
+r = redis.Redis(host='localhost', port=6379, db=0)
+print(f'Redis connected: {r.ping()}')
+print(f'Redis version: {r.info()[\"redis_version\"]}')
+"
 ```
 
 ### Run Your First Crawl
 
+#### Basic Crawl
+
 ```bash
-# Basic crawl
+# Minimal crawl
 python -m crawler --seed-url https://example.com --output ./data
 
-# With options
+# Expected output:
+# [INFO] Starting crawl with 1 seed URL(s)
+# [INFO] Crawling: https://example.com
+# [INFO] Fetched: https://example.com (200 OK, 1.2KB)
+# [INFO] Structure learned for example.com/homepage
+# [INFO] Extracted: title, content
+# [INFO] Crawl complete: 1 pages, 0 errors
+```
+
+#### Crawl with Options
+
+```bash
 python -m crawler \
     --seed-url https://example.com \
     --output ./data \
     --max-depth 5 \
     --max-pages 100 \
-    --rate-limit 0.5
+    --rate-limit 0.5 \
+    --user-agent "MyCrawler/1.0 (+https://mysite.com/bot)" \
+    --respect-robots \
+    --verbose
+```
+
+#### Verify Output
+
+```bash
+# Check output directory structure
+ls -la ./data/
+# Expected:
+# data/
+# ├── raw/                    # Raw HTML files
+# │   └── example.com/
+# │       └── index.html
+# ├── extracted/              # Extracted JSON data
+# │   └── example.com/
+# │       └── index.json
+# ├── metadata/               # Crawl metadata
+# │   └── crawl_stats.json
+# └── logs/                   # Crawl logs
+#     └── crawler.log
+
+# View extracted content
+cat ./data/extracted/example.com/index.json
+```
+
+### Troubleshooting
+
+#### Common Issues
+
+**1. "Redis connection refused"**
+```bash
+# Check if Redis is running
+redis-cli ping
+
+# If not, start it
+docker start redis-crawler  # If using Docker
+sudo systemctl start redis-server  # If local install
+
+# Check Redis logs
+docker logs redis-crawler
+# or
+sudo journalctl -u redis-server
+```
+
+**2. "Module not found: crawler"**
+```bash
+# Make sure you're in the virtual environment
+source .venv/bin/activate
+
+# Reinstall the package
+pip install -e .
+```
+
+**3. "Permission denied" when writing output**
+```bash
+# Check directory permissions
+ls -la ./data/
+
+# Create directory with proper permissions
+mkdir -p ./data && chmod 755 ./data
+```
+
+**4. "SSL certificate verify failed"**
+```bash
+# Update certificates
+pip install --upgrade certifi
+
+# Or disable SSL verification (not recommended for production)
+python -m crawler --seed-url https://example.com --no-verify-ssl
+```
+
+**5. "Rate limited (429)" errors**
+```bash
+# Increase delay between requests
+python -m crawler --seed-url https://example.com --rate-limit 2.0
+
+# The crawler will automatically back off, but you can start slower
+```
+
+**6. "Playwright not found" for JS rendering**
+```bash
+# Install Playwright and browsers
+pip install playwright
+playwright install chromium
+
+# Verify installation
+python -c "from playwright.sync_api import sync_playwright; print('Playwright OK')"
+```
+
+#### Debug Mode
+
+```bash
+# Run with maximum verbosity
+python -m crawler \
+    --seed-url https://example.com \
+    --output ./data \
+    --log-level DEBUG \
+    --log-file ./crawler-debug.log
+
+# View real-time logs
+tail -f ./crawler-debug.log
+```
+
+#### Health Check Script
+
+Create `check_setup.py`:
+```python
+#!/usr/bin/env python
+"""Verify crawler setup is complete."""
+import sys
+
+def check_python():
+    version = sys.version_info
+    if version.major < 3 or (version.major == 3 and version.minor < 11):
+        print(f"❌ Python 3.11+ required (found {version.major}.{version.minor})")
+        return False
+    print(f"✅ Python {version.major}.{version.minor}.{version.micro}")
+    return True
+
+def check_redis():
+    try:
+        import redis
+        r = redis.Redis()
+        r.ping()
+        print("✅ Redis connected")
+        return True
+    except Exception as e:
+        print(f"❌ Redis: {e}")
+        return False
+
+def check_crawler():
+    try:
+        import crawler
+        print(f"✅ Crawler installed (v{crawler.__version__})")
+        return True
+    except ImportError as e:
+        print(f"❌ Crawler: {e}")
+        return False
+
+def check_optional():
+    results = []
+
+    # Check Playwright
+    try:
+        from playwright.sync_api import sync_playwright
+        results.append("✅ Playwright (JS rendering)")
+    except ImportError:
+        results.append("⚠️  Playwright not installed (optional)")
+
+    # Check ML dependencies
+    try:
+        import sentence_transformers
+        results.append("✅ sentence-transformers (ML features)")
+    except ImportError:
+        results.append("⚠️  sentence-transformers not installed (optional)")
+
+    for r in results:
+        print(r)
+
+if __name__ == "__main__":
+    print("Checking Adaptive Crawler setup...\n")
+
+    all_ok = all([
+        check_python(),
+        check_redis(),
+        check_crawler(),
+    ])
+
+    print()
+    check_optional()
+
+    print()
+    if all_ok:
+        print("🎉 All required components are ready!")
+        sys.exit(0)
+    else:
+        print("❌ Some required components are missing.")
+        sys.exit(1)
+```
+
+Run the health check:
+```bash
+python check_setup.py
 ```
 
 ---
@@ -1539,7 +2212,11 @@ config = CrawlConfig(
 
 ## Usage Examples
 
-### Basic Crawl
+This section provides comprehensive examples for common crawling scenarios, from simple single-page crawls to complex multi-site monitoring.
+
+### Command Line Usage
+
+#### Basic Crawl
 
 ```bash
 # Crawl a single site
@@ -1552,68 +2229,570 @@ python -m crawler \
     --seed-url https://site1.com \
     --seed-url https://site2.com \
     --output ./data
+
+# Read seed URLs from a file
+cat seeds.txt
+# https://example1.com
+# https://example2.com
+# https://example3.com
+
+python -m crawler \
+    --seed-file seeds.txt \
+    --output ./data
 ```
 
-### Limited Crawl
+#### Crawl Depth and Limits
 
 ```bash
-# Limit depth and pages
+# Limit crawl depth (how many links to follow from seed)
 python -m crawler \
     --seed-url https://example.com \
     --output ./data \
-    --max-depth 3 \
-    --max-pages 50 \
-    --max-pages-per-domain 25
+    --max-depth 3
+
+# Limit total pages
+python -m crawler \
+    --seed-url https://example.com \
+    --output ./data \
+    --max-pages 100
+
+# Limit pages per domain (useful for multi-domain crawls)
+python -m crawler \
+    --seed-url https://example.com \
+    --output ./data \
+    --max-pages-per-domain 50
+
+# Combined limits
+python -m crawler \
+    --seed-url https://example.com \
+    --output ./data \
+    --max-depth 5 \
+    --max-pages 1000 \
+    --max-pages-per-domain 200
 ```
 
-### Domain-Restricted Crawl
+#### Domain Restrictions
 
 ```bash
 # Stay within specific domains
 python -m crawler \
     --seed-url https://docs.example.com \
     --output ./data \
-    --allowed-domains docs.example.com example.com
-```
+    --allowed-domains docs.example.com api.example.com
 
-### Polite Crawl
-
-```bash
-# Slower, more polite crawling
+# Exclude specific paths
 python -m crawler \
     --seed-url https://example.com \
     --output ./data \
-    --rate-limit 0.2 \
-    --respect-robots
+    --exclude-patterns "/admin/*" "/private/*" "/api/*"
+
+# Combine domain and path restrictions
+python -m crawler \
+    --seed-url https://example.com \
+    --output ./data \
+    --allowed-domains example.com \
+    --exclude-patterns "/cdn/*" "*.pdf" "*.zip"
 ```
 
-### Python API
+#### Rate Limiting and Politeness
+
+```bash
+# Set delay between requests (seconds)
+python -m crawler \
+    --seed-url https://example.com \
+    --output ./data \
+    --rate-limit 2.0
+
+# Respect robots.txt (enabled by default)
+python -m crawler \
+    --seed-url https://example.com \
+    --output ./data \
+    --respect-robots
+
+# Set custom User-Agent
+python -m crawler \
+    --seed-url https://example.com \
+    --output ./data \
+    --user-agent "MyCompanyBot/1.0 (+https://company.com/bot; contact@company.com)"
+
+# Very polite crawl for sensitive sites
+python -m crawler \
+    --seed-url https://example.com \
+    --output ./data \
+    --rate-limit 5.0 \
+    --max-concurrent 2 \
+    --respect-robots \
+    --user-agent "ResearchBot/1.0 (Academic research; contact@university.edu)"
+```
+
+### Python API Examples
+
+#### Example 1: Simple Crawl
 
 ```python
 import asyncio
 from crawler.core.crawler import Crawler
 from crawler.config import CrawlConfig
 
-async def main():
+async def simple_crawl():
+    """Basic crawl with minimal configuration."""
     config = CrawlConfig(
         seed_urls=["https://example.com"],
         output_dir="./data",
+    )
+
+    async with Crawler(config) as crawler:
+        stats = await crawler.crawl()
+
+    print(f"Crawled {stats.pages_crawled} pages")
+    print(f"Found {stats.links_discovered} links")
+    print(f"Errors: {stats.errors}")
+
+asyncio.run(simple_crawl())
+```
+
+#### Example 2: Crawl with Callbacks
+
+```python
+import asyncio
+from crawler.core.crawler import Crawler
+from crawler.config import CrawlConfig
+
+async def crawl_with_callbacks():
+    """Crawl with real-time progress callbacks."""
+    config = CrawlConfig(
+        seed_urls=["https://example.com"],
+        output_dir="./data",
+        max_pages=50,
+    )
+
+    # Track progress
+    pages_crawled = []
+    errors = []
+
+    async with Crawler(config) as crawler:
+        # Register callbacks
+        @crawler.on_page_crawled
+        def handle_page(url: str, result):
+            pages_crawled.append(url)
+            print(f"✓ [{len(pages_crawled)}] {url}")
+            print(f"  Title: {result.extracted.get('title', 'N/A')}")
+            print(f"  Size: {result.content_length} bytes")
+
+        @crawler.on_structure_learned
+        def handle_structure(domain: str, page_type: str, structure):
+            print(f"📊 Learned structure for {domain}/{page_type}")
+            print(f"   Tags: {len(structure.tag_hierarchy)} unique")
+            print(f"   Classes: {len(structure.css_class_map)}")
+
+        @crawler.on_error
+        def handle_error(url: str, error: Exception):
+            errors.append((url, error))
+            print(f"✗ Error: {url} - {error}")
+
+        @crawler.on_rate_limited
+        def handle_rate_limit(domain: str, delay: float):
+            print(f"⏳ Rate limited on {domain}, waiting {delay}s")
+
+        stats = await crawler.crawl()
+
+    print(f"\n=== Crawl Complete ===")
+    print(f"Pages: {len(pages_crawled)}")
+    print(f"Errors: {len(errors)}")
+
+asyncio.run(crawl_with_callbacks())
+```
+
+#### Example 3: E-commerce Product Scraping
+
+```python
+import asyncio
+import json
+from crawler.core.crawler import Crawler
+from crawler.config import CrawlConfig, RateLimitConfig
+from crawler.extraction import ContentExtractor
+
+async def scrape_products():
+    """Scrape product pages from an e-commerce site."""
+    config = CrawlConfig(
+        seed_urls=["https://shop.example.com/products"],
+        output_dir="./products",
+        max_depth=3,
+        max_pages=500,
+        allowed_domains=["shop.example.com"],
+        # Only crawl product pages
+        include_patterns=["/products/*", "/product/*"],
+        exclude_patterns=["/cart", "/checkout", "/account/*"],
+
+        rate_limit=RateLimitConfig(
+            default_delay=1.5,  # Be polite to the server
+            adaptive=True,
+        ),
+    )
+
+    products = []
+
+    async with Crawler(config) as crawler:
+        @crawler.on_page_crawled
+        def extract_product(url: str, result):
+            if "/product/" in url:
+                # Custom product extraction
+                product = {
+                    "url": url,
+                    "title": result.extracted.get("title"),
+                    "price": extract_price(result.html),
+                    "description": result.extracted.get("content"),
+                    "images": result.extracted.get("images", []),
+                    "sku": extract_sku(result.html),
+                }
+                products.append(product)
+                print(f"Found product: {product['title']} - ${product['price']}")
+
+        await crawler.crawl()
+
+    # Save products
+    with open("./products/products.json", "w") as f:
+        json.dump(products, f, indent=2)
+
+    print(f"Scraped {len(products)} products")
+
+def extract_price(html: str) -> float:
+    """Extract price from HTML (simplified example)."""
+    import re
+    match = re.search(r'\$(\d+(?:\.\d{2})?)', html)
+    return float(match.group(1)) if match else 0.0
+
+def extract_sku(html: str) -> str:
+    """Extract SKU from HTML (simplified example)."""
+    import re
+    match = re.search(r'SKU:\s*(\w+)', html)
+    return match.group(1) if match else ""
+
+asyncio.run(scrape_products())
+```
+
+#### Example 4: News Article Monitoring
+
+```python
+import asyncio
+from datetime import datetime
+from crawler.core.crawler import Crawler
+from crawler.config import CrawlConfig
+from crawler.adaptive import ChangeDetector
+
+async def monitor_news_site():
+    """Monitor a news site for new articles."""
+    config = CrawlConfig(
+        seed_urls=["https://news.example.com"],
+        output_dir="./news",
+        max_depth=2,
+        include_patterns=["/article/*", "/news/*", "/story/*"],
+        exclude_patterns=["/archive/*", "/author/*"],
+    )
+
+    detector = ChangeDetector()
+    new_articles = []
+
+    async with Crawler(config) as crawler:
+        @crawler.on_page_crawled
+        def check_article(url: str, result):
+            # Check if this is a new or updated article
+            stored = crawler.structure_store.get(url)
+
+            if stored is None:
+                # New article
+                new_articles.append({
+                    "url": url,
+                    "title": result.extracted.get("title"),
+                    "published": datetime.now().isoformat(),
+                    "status": "new",
+                })
+                print(f"📰 NEW: {result.extracted.get('title')}")
+            else:
+                # Check for updates
+                analysis = detector.detect_changes(
+                    stored.structure,
+                    result.structure
+                )
+                if analysis.has_changes:
+                    new_articles.append({
+                        "url": url,
+                        "title": result.extracted.get("title"),
+                        "updated": datetime.now().isoformat(),
+                        "status": "updated",
+                        "change_type": analysis.classification.name,
+                    })
+                    print(f"📝 UPDATED: {result.extracted.get('title')}")
+
+        await crawler.crawl()
+
+    print(f"\nFound {len(new_articles)} new/updated articles")
+    return new_articles
+
+asyncio.run(monitor_news_site())
+```
+
+#### Example 5: Multi-Site Comparison
+
+```python
+import asyncio
+from crawler.core.crawler import Crawler
+from crawler.config import CrawlConfig
+
+async def compare_sites():
+    """Compare structure across multiple competitor sites."""
+    sites = [
+        "https://competitor1.com",
+        "https://competitor2.com",
+        "https://competitor3.com",
+    ]
+
+    results = {}
+
+    for site in sites:
+        config = CrawlConfig(
+            seed_urls=[site],
+            output_dir=f"./comparison/{site.split('//')[1]}",
+            max_pages=20,
+            max_depth=2,
+        )
+
+        async with Crawler(config) as crawler:
+            stats = await crawler.crawl()
+
+            # Collect structure data
+            results[site] = {
+                "pages": stats.pages_crawled,
+                "structures": {},
+            }
+
+            for domain, structures in crawler.structure_store.get_all().items():
+                for page_type, structure in structures.items():
+                    results[site]["structures"][page_type] = {
+                        "tag_count": len(structure.tag_hierarchy),
+                        "css_classes": len(structure.css_class_map),
+                        "has_article": "article" in structure.semantic_landmarks,
+                        "has_nav": "nav" in structure.semantic_landmarks,
+                    }
+
+    # Compare results
+    print("\n=== Site Comparison ===")
+    for site, data in results.items():
+        print(f"\n{site}:")
+        print(f"  Pages crawled: {data['pages']}")
+        for page_type, info in data["structures"].items():
+            print(f"  {page_type}: {info['tag_count']} tags, {info['css_classes']} classes")
+
+asyncio.run(compare_sites())
+```
+
+#### Example 6: Sitemap-Based Crawl
+
+```python
+import asyncio
+from crawler.core.crawler import Crawler
+from crawler.config import CrawlConfig
+from crawler.compliance import SitemapFetcher
+
+async def crawl_from_sitemap():
+    """Use sitemap to discover and prioritize URLs."""
+    # First, fetch URLs from sitemap
+    async with SitemapFetcher(user_agent="MyCrawler/1.0") as fetcher:
+        sitemap_urls = await fetcher.discover_sitemaps("example.com")
+
+        all_urls = []
+        async for sitemap in fetcher.fetch_all_sitemaps(sitemap_urls):
+            for url in sitemap.urls:
+                all_urls.append({
+                    "url": url.loc,
+                    "priority": url.priority or 0.5,
+                    "lastmod": url.lastmod,
+                })
+
+        print(f"Found {len(all_urls)} URLs in sitemap")
+
+    # Sort by priority (highest first)
+    all_urls.sort(key=lambda x: x["priority"], reverse=True)
+
+    # Crawl top priority URLs first
+    seed_urls = [u["url"] for u in all_urls[:100]]
+
+    config = CrawlConfig(
+        seed_urls=seed_urls,
+        output_dir="./sitemap_crawl",
+        max_pages=500,
+    )
+
+    async with Crawler(config) as crawler:
+        stats = await crawler.crawl()
+
+    print(f"Crawled {stats.pages_crawled} pages from sitemap")
+
+asyncio.run(crawl_from_sitemap())
+```
+
+#### Example 7: JavaScript-Heavy Site
+
+```python
+import asyncio
+from crawler.core.crawler import Crawler
+from crawler.core.renderer import JSRenderer, HybridFetcher
+from crawler.config import CrawlConfig
+
+async def crawl_spa():
+    """Crawl a JavaScript-heavy Single Page Application."""
+    config = CrawlConfig(
+        seed_urls=["https://spa.example.com"],
+        output_dir="./spa_data",
+        max_pages=50,
+    )
+
+    # Configure JS rendering
+    async with JSRenderer(
+        browser_type="chromium",
+        headless=True,
+    ) as renderer:
+        # Use hybrid fetcher that automatically detects JS need
+        async with HybridFetcher(js_renderer=renderer) as fetcher:
+            async with Crawler(config, fetcher=fetcher) as crawler:
+                @crawler.on_page_crawled
+                def log_render(url: str, result):
+                    if result.used_js_rendering:
+                        print(f"🌐 JS rendered: {url}")
+                    else:
+                        print(f"📄 HTTP only: {url}")
+
+                stats = await crawler.crawl()
+
+    print(f"Crawled {stats.pages_crawled} SPA pages")
+
+asyncio.run(crawl_spa())
+```
+
+#### Example 8: Distributed Crawl
+
+```python
+import asyncio
+from crawler.core.distributed import (
+    DistributedCrawlManager,
+    CrawlerWorker,
+)
+import redis.asyncio as redis
+
+async def run_distributed_crawl():
+    """Run a distributed crawl across multiple workers."""
+    redis_client = redis.from_url("redis://localhost:6379/0")
+
+    # Manager creates the job
+    manager = DistributedCrawlManager(redis_client)
+
+    job = await manager.create_job(
+        job_id="large-crawl-001",
+        seed_urls=[
+            "https://example1.com",
+            "https://example2.com",
+            "https://example3.com",
+        ],
+        max_urls=10000,
         max_depth=5,
     )
 
-    async with Crawler(config, redis_url="redis://localhost:6379/0") as crawler:
-        # Optional: Add callbacks
-        crawler.on_page_crawled(lambda url, result: print(f"Crawled: {url}"))
-        crawler.on_error(lambda url, error: print(f"Error: {url} - {error}"))
+    print(f"Created job: {job.job_id}")
+    print(f"Seed URLs: {len(job.seed_urls)}")
 
-        # Run crawl
-        stats = await crawler.crawl()
+    # In production, run workers on different machines
+    # Here we simulate with multiple async workers
+    workers = []
+    for i in range(3):
+        worker = CrawlerWorker(
+            redis_client=redis_client,
+            job_id=job.job_id,
+            worker_id=f"worker-{i}",
+        )
+        workers.append(worker.start())
 
-        print(f"Pages crawled: {stats.pages_crawled}")
-        print(f"Links discovered: {stats.links_discovered}")
-        print(f"Structures learned: {stats.structures_learned}")
+    # Monitor progress
+    async def monitor():
+        while True:
+            status = await manager.get_job_status(job.job_id)
+            print(f"\rPending: {status['pending']} | "
+                  f"Processing: {status['processing']} | "
+                  f"Completed: {status['completed']}", end="")
 
-asyncio.run(main())
+            if status['state'] == 'COMPLETED':
+                break
+            await asyncio.sleep(2)
+
+    # Run workers and monitor concurrently
+    await asyncio.gather(
+        *workers,
+        monitor(),
+    )
+
+    print(f"\nDistributed crawl complete!")
+
+asyncio.run(run_distributed_crawl())
+```
+
+### Output Format
+
+The crawler produces structured output in the following format:
+
+#### Directory Structure
+```
+output/
+├── raw/                          # Raw HTML files
+│   └── example.com/
+│       ├── index.html
+│       └── about.html
+├── extracted/                    # Extracted JSON data
+│   └── example.com/
+│       ├── index.json
+│       └── about.json
+├── structures/                   # Learned page structures
+│   └── example.com/
+│       ├── homepage.json
+│       └── article.json
+├── metadata/
+│   ├── crawl_stats.json         # Overall statistics
+│   ├── url_map.json             # URL to file mapping
+│   └── errors.json              # Error log
+└── logs/
+    └── crawler.log              # Full crawl log
+```
+
+#### Extracted JSON Format
+```json
+{
+    "url": "https://example.com/article/123",
+    "crawled_at": "2025-01-30T10:30:00Z",
+    "status_code": 200,
+    "content_type": "text/html",
+    "content_length": 15234,
+    "extracted": {
+        "title": "Article Title Here",
+        "content": "Full article text content...",
+        "description": "Meta description if available",
+        "author": "John Doe",
+        "published_date": "2025-01-29",
+        "images": [
+            "https://example.com/img/hero.jpg"
+        ],
+        "links": [
+            {"href": "/related/456", "text": "Related Article"}
+        ]
+    },
+    "structure": {
+        "page_type": "article",
+        "similarity_to_stored": 0.97,
+        "version": 3
+    },
+    "compliance": {
+        "robots_allowed": true,
+        "crawl_delay_respected": true,
+        "pii_detected": false
+    }
+}
 ```
 
 ---
@@ -2402,17 +3581,218 @@ ruff format crawler/
 
 ## Legal Notice
 
-This crawler is designed for **ethical, legal web data collection**. Users are responsible for:
+This crawler is designed for **ethical, legal web data collection**. This section provides guidance on legal compliance, but **this is technical documentation, not legal advice**. Always consult with a qualified attorney for your specific use case.
 
-1. **Complying with applicable laws** (CFAA, GDPR, CCPA, local regulations)
-2. **Respecting website terms of service**
-3. **Obtaining necessary legal advice** for their jurisdiction
-4. **Configuring appropriate rate limits** to avoid service disruption
-5. **Using collected data responsibly**
+### Your Legal Responsibilities
 
-The crawler includes compliance features, but **proper configuration and legal review are the user's responsibility**.
+As a user of this crawler, you are responsible for:
 
-**This documentation is technical guidance, not legal advice.**
+| Responsibility | Description |
+|----------------|-------------|
+| **Legal Compliance** | Comply with all applicable laws including CFAA, GDPR, CCPA, and local regulations |
+| **Terms of Service** | Respect website terms of service and acceptable use policies |
+| **Authorization** | Ensure you have proper authorization before crawling any site |
+| **Rate Limiting** | Configure appropriate rate limits to avoid service disruption |
+| **Data Handling** | Use collected data responsibly and in accordance with privacy laws |
+| **Legal Counsel** | Obtain legal advice for your specific jurisdiction and use case |
+
+### Legal Frameworks
+
+#### Computer Fraud and Abuse Act (CFAA) - United States
+
+The CFAA prohibits unauthorized access to computer systems. Key considerations:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    CFAA COMPLIANCE CHECKLIST                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ✓ Public Content Only                                          │
+│    Only crawl publicly accessible pages (no login required)     │
+│                                                                  │
+│  ✓ Respect Access Controls                                      │
+│    Stop if you encounter authentication prompts                 │
+│                                                                  │
+│  ✓ Honor robots.txt                                             │
+│    Respect crawl restrictions and rate limits                   │
+│                                                                  │
+│  ✓ Identify Your Bot                                            │
+│    Use a clear User-Agent with contact information              │
+│                                                                  │
+│  ✓ Stop on Request                                              │
+│    Immediately cease crawling if asked by site owner            │
+│                                                                  │
+│  ✓ No Circumvention                                             │
+│    Never bypass security measures, CAPTCHAs, or IP blocks       │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Crawler implementation:**
+```python
+from crawler.legal import CFAAChecker
+
+# The crawler automatically checks authorization
+checker = CFAAChecker()
+result = await checker.is_authorized(url)
+
+# Blocks crawling if:
+# - Authentication is required
+# - Site has sent cease-and-desist
+# - robots.txt explicitly blocks crawlers
+# - Previous access was denied
+```
+
+#### General Data Protection Regulation (GDPR) - European Union
+
+GDPR applies when collecting data from EU residents. Requirements:
+
+| Principle | Implementation |
+|-----------|----------------|
+| **Lawful Basis** | Ensure legitimate interest or consent for data collection |
+| **Data Minimization** | Only collect data necessary for your stated purpose |
+| **Purpose Limitation** | Don't use collected data for incompatible purposes |
+| **Storage Limitation** | Delete data when no longer needed (configure retention) |
+| **Accuracy** | Keep collected data accurate and up-to-date |
+| **Security** | Implement appropriate security measures |
+| **Rights** | Support data subject rights (access, deletion, etc.) |
+
+**Crawler implementation:**
+```python
+from crawler.config import GDPRConfig, PIIHandlingConfig
+
+config = CrawlConfig(
+    gdpr=GDPRConfig(
+        enabled=True,
+        retention_days=365,           # Auto-delete after 1 year
+        collect_only=["url", "title", "content"],  # Data minimization
+    ),
+    pii=PIIHandlingConfig(
+        action="redact",              # Remove PII from collected data
+        log_detections=True,          # Audit trail
+    ),
+)
+```
+
+#### California Consumer Privacy Act (CCPA)
+
+CCPA provides California residents with privacy rights. Key considerations:
+
+- Right to know what data is collected
+- Right to delete personal information
+- Right to opt-out of data sale
+- Non-discrimination for exercising rights
+
+**Best practices:**
+- Document what data you collect and why
+- Implement data deletion capabilities
+- Never sell collected personal data without consent
+- Maintain records of data collection activities
+
+### Ethical Crawling Guidelines
+
+Beyond legal requirements, follow these ethical guidelines:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    ETHICAL CRAWLING PRINCIPLES                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. TRANSPARENCY                                                 │
+│     • Identify your crawler clearly in User-Agent               │
+│     • Provide contact information                               │
+│     • Explain your purpose if asked                             │
+│                                                                  │
+│  2. RESPECT                                                      │
+│     • Honor robots.txt directives                               │
+│     • Respect Crawl-delay specifications                        │
+│     • Stop crawling if asked                                    │
+│                                                                  │
+│  3. MINIMAL IMPACT                                               │
+│     • Use appropriate rate limiting                             │
+│     • Avoid peak traffic hours for high-volume crawls           │
+│     • Don't overwhelm small servers                             │
+│                                                                  │
+│  4. DATA RESPONSIBILITY                                          │
+│     • Only collect what you need                                │
+│     • Store data securely                                       │
+│     • Delete data when no longer needed                         │
+│     • Never collect or store PII unnecessarily                  │
+│                                                                  │
+│  5. GOOD CITIZENSHIP                                             │
+│     • Don't crawl content behind paywalls                       │
+│     • Respect copyright and intellectual property               │
+│     • Don't redistribute collected content without permission   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### User-Agent Best Practices
+
+Always identify your crawler with a proper User-Agent:
+
+```python
+# Good User-Agent examples:
+user_agent = "CompanyBot/1.0 (+https://company.com/bot; bot@company.com)"
+user_agent = "ResearchCrawler/2.0 (+https://university.edu/research-bot; researcher@university.edu)"
+user_agent = "NewsAggregator/1.5 (https://news-site.com/about; contact@news-site.com)"
+
+# Include:
+# - Bot name and version
+# - URL with more information
+# - Contact email for issues
+
+# Bad User-Agent examples (don't do this):
+# - "" (empty)
+# - "Mozilla/5.0" (pretending to be a browser)
+# - "curl/7.68.0" (anonymous)
+```
+
+### Handling Blocks and Restrictions
+
+When a site blocks or restricts your crawler:
+
+1. **Respect the block immediately** - Don't try to circumvent
+2. **Review your crawling behavior** - Were you too aggressive?
+3. **Contact the site owner** - Explain your purpose, ask for permission
+4. **Wait before retrying** - Give adequate time before checking again
+5. **Document the block** - Keep records for compliance purposes
+
+```python
+# The crawler automatically handles blocks
+from crawler.compliance import BlockedDomainTracker
+
+tracker = BlockedDomainTracker(redis_client)
+
+# Check before crawling
+if await tracker.is_blocked("example.com"):
+    # Don't crawl - the site has blocked us
+    reason = await tracker.get_block_reason("example.com")
+    blocked_since = await tracker.get_block_time("example.com")
+    # Consider contacting site owner
+
+# Blocks are recorded automatically when:
+# - Receiving 403 Forbidden responses
+# - Encountering CAPTCHA challenges
+# - Getting IP-blocked
+# - Receiving cease-and-desist requests
+```
+
+### Disclaimer
+
+**IMPORTANT NOTICES:**
+
+1. **Not Legal Advice**: This documentation provides technical guidance only. It is not legal advice and should not be relied upon as such.
+
+2. **User Responsibility**: Users are solely responsible for ensuring their use of this crawler complies with all applicable laws, regulations, and third-party terms of service.
+
+3. **No Warranties**: This software is provided "as is" without warranties of any kind. The authors are not liable for any damages or legal issues arising from its use.
+
+4. **Jurisdiction Varies**: Laws regarding web scraping vary significantly by jurisdiction. What's legal in one country may be illegal in another.
+
+5. **Consult an Attorney**: Before using this crawler for any commercial purpose or on any scale, consult with a qualified attorney familiar with technology law in your jurisdiction.
+
+**By using this crawler, you acknowledge that you have read and understood these disclaimers and accept full responsibility for your use of the software.**
 
 ---
 
