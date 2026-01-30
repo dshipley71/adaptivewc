@@ -10,6 +10,10 @@ An intelligent, compliance-first web crawler with ML-based structure learning th
 - [Architecture](#architecture)
 - [Crawl Workflow](#crawl-workflow)
 - [Adaptive Learning System](#adaptive-learning-system)
+- [Sitemap Processing](#sitemap-processing)
+- [JavaScript Rendering](#javascript-rendering)
+- [Distributed Crawling](#distributed-crawling)
+- [Scheduled Recrawling](#scheduled-recrawling)
 - [Configuration](#configuration)
 - [Usage Examples](#usage-examples)
 - [Sports News Monitor Example](#sports-news-monitor-example)
@@ -39,6 +43,12 @@ An intelligent, compliance-first web crawler with ML-based structure learning th
 - **Structured Logging**: Full audit trail of all operations
 - **Circuit Breakers**: Automatic failure isolation per domain
 - **Parallel Crawling**: Configurable concurrency with domain politeness
+
+### Advanced Crawling
+- **Sitemap Processing**: Full XML sitemap support with recursive index handling and gzip decompression
+- **JavaScript Rendering**: Playwright integration for SPAs with automatic JS requirement detection
+- **Distributed Crawling**: Multi-worker coordination with Redis queues, heartbeats, and leader election
+- **Scheduled Recrawling**: Cron-like scheduling with adaptive intervals based on content change frequency
 
 ---
 
@@ -170,11 +180,15 @@ crawler/
 ├── core/                    # Core orchestration
 │   ├── crawler.py          # Main crawler orchestrator
 │   ├── fetcher.py          # HTTP client + compliance pipeline
-│   └── scheduler.py        # URL frontier management
+│   ├── scheduler.py        # URL frontier management
+│   ├── renderer.py         # Playwright JS rendering
+│   ├── distributed.py      # Multi-worker coordination
+│   └── recrawl_scheduler.py # Scheduled recrawling
 │
 ├── compliance/             # Legal compliance
 │   ├── robots_parser.py    # RFC 9309 robots.txt parsing
-│   └── rate_limiter.py     # Adaptive per-domain rate limiting
+│   ├── rate_limiter.py     # Adaptive per-domain rate limiting
+│   └── sitemap_parser.py   # XML sitemap parsing
 │
 ├── legal/                  # Legal frameworks
 │   ├── cfaa_checker.py     # CFAA authorization checks
@@ -488,6 +502,930 @@ The `StrategyLearner` infers CSS selectors for content extraction:
               │  Apply CSS selectors to get title, content, etc.  │
               └───────────────────────────────────────────────────┘
 ```
+
+---
+
+## Sitemap Processing
+
+The crawler includes comprehensive XML sitemap support for efficient URL discovery. Instead of crawling an entire site link-by-link, sitemaps provide a structured index of all pages a site wants indexed.
+
+### What is a Sitemap?
+
+XML sitemaps are files that list URLs for a site along with metadata about each URL (when it was last updated, how often it changes, how important it is relative to other URLs). Search engines use sitemaps to crawl sites more efficiently.
+
+### Sitemap Types Supported
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    SITEMAP FORMATS                               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. URLSET (Standard Sitemap)                                   │
+│     └──► Contains individual URLs with metadata                 │
+│                                                                  │
+│     <?xml version="1.0" encoding="UTF-8"?>                      │
+│     <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">│
+│       <url>                                                      │
+│         <loc>https://example.com/page1</loc>                    │
+│         <lastmod>2025-01-15</lastmod>                           │
+│         <changefreq>weekly</changefreq>                         │
+│         <priority>0.8</priority>                                │
+│       </url>                                                     │
+│     </urlset>                                                    │
+│                                                                  │
+│  2. SITEMAPINDEX (Sitemap Index)                                │
+│     └──► Points to multiple child sitemaps                      │
+│     └──► Used by large sites (50,000+ URLs)                     │
+│                                                                  │
+│     <sitemapindex xmlns="...">                                  │
+│       <sitemap>                                                  │
+│         <loc>https://example.com/sitemap-articles.xml</loc>     │
+│         <lastmod>2025-01-20</lastmod>                           │
+│       </sitemap>                                                 │
+│       <sitemap>                                                  │
+│         <loc>https://example.com/sitemap-products.xml</loc>     │
+│       </sitemap>                                                 │
+│     </sitemapindex>                                              │
+│                                                                  │
+│  3. GZIP COMPRESSED (.xml.gz)                                   │
+│     └──► Automatically detected and decompressed                │
+│     └──► Common for large sitemaps                              │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### URL Metadata Fields
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `loc` | The URL (required) | `https://example.com/page` |
+| `lastmod` | Last modification date | `2025-01-15` or `2025-01-15T10:30:00Z` |
+| `changefreq` | How often the page changes | `always`, `hourly`, `daily`, `weekly`, `monthly`, `yearly`, `never` |
+| `priority` | Relative importance (0.0-1.0) | `0.8` (higher = more important) |
+
+### How Sitemap Processing Works
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    SITEMAP PROCESSING FLOW                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. DISCOVERY                                                    │
+│     ├──► Check robots.txt for Sitemap: directives               │
+│     └──► Try common paths: /sitemap.xml, /sitemap_index.xml     │
+│                                                                  │
+│  2. FETCH                                                        │
+│     ├──► HTTP GET with User-Agent                               │
+│     ├──► Handle gzip compression                                │
+│     └──► Follow redirects                                        │
+│                                                                  │
+│  3. PARSE                                                        │
+│     ├──► Detect type (urlset vs sitemapindex)                   │
+│     ├──► Extract URLs and metadata                              │
+│     └──► Validate against sitemap protocol                      │
+│                                                                  │
+│  4. RECURSE (for sitemap indexes)                               │
+│     ├──► Queue child sitemaps                                   │
+│     ├──► Track processed sitemaps (avoid duplicates)            │
+│     └──► Respect max_sitemaps limit                             │
+│                                                                  │
+│  5. YIELD URLS                                                   │
+│     ├──► Stream URLs as discovered                              │
+│     ├──► Include metadata (lastmod, changefreq, priority)       │
+│     └──► Filter by domain if specified                          │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Python API
+
+```python
+from crawler.compliance import (
+    SitemapFetcher,
+    SitemapParser,
+    fetch_sitemap_urls,
+    ChangeFrequency,
+)
+
+# Quick fetch all URLs from a domain's sitemaps
+urls = await fetch_sitemap_urls(
+    domain="example.com",
+    user_agent="MyCrawler/1.0",
+    timeout=30.0,
+)
+for url in urls:
+    print(f"{url.loc} - last modified: {url.lastmod}")
+
+# Full control with SitemapFetcher
+async with SitemapFetcher(
+    user_agent="MyCrawler/1.0",
+    max_sitemaps=100,           # Max sitemap files to process
+    max_urls_per_sitemap=50000, # Max URLs per sitemap
+) as fetcher:
+    # Discover sitemaps for a domain
+    sitemap_urls = await fetcher.discover_sitemaps("example.com")
+
+    # Fetch and parse all sitemaps (handles indexes recursively)
+    async for sitemap in fetcher.fetch_all_sitemaps(sitemap_urls):
+        print(f"Sitemap: {sitemap.url}")
+        print(f"  Is index: {sitemap.is_index}")
+        print(f"  URLs: {len(sitemap.urls)}")
+        print(f"  Child sitemaps: {len(sitemap.sitemaps)}")
+
+        # Access individual URLs
+        for url in sitemap.urls:
+            print(f"  - {url.loc}")
+            if url.changefreq == ChangeFrequency.DAILY:
+                print("    (updates daily)")
+
+# Parse sitemap content directly
+parser = SitemapParser()
+sitemap = parser.parse(
+    content=xml_bytes,
+    url="https://example.com/sitemap.xml",
+    status_code=200,
+)
+```
+
+### Integration with Crawler
+
+```python
+from crawler.core import Crawler
+from crawler.compliance import SitemapFetcher
+
+async def crawl_from_sitemap():
+    # Fetch URLs from sitemap first
+    async with SitemapFetcher() as fetcher:
+        sitemap_urls = await fetcher.discover_sitemaps("example.com")
+        seed_urls = []
+        async for url in fetcher.get_all_urls(sitemap_urls):
+            seed_urls.append(url.loc)
+
+    # Use sitemap URLs as seeds
+    config = CrawlConfig(
+        seed_urls=seed_urls[:1000],  # Limit initial seeds
+        output_dir="./data",
+        max_pages=5000,
+    )
+
+    async with Crawler(config) as crawler:
+        stats = await crawler.crawl()
+```
+
+---
+
+## JavaScript Rendering
+
+Modern websites often rely heavily on JavaScript to render content. Single Page Applications (SPAs) built with React, Vue, Angular, or similar frameworks may show only a loading spinner when fetched with a simple HTTP request. The JavaScript Rendering module uses Playwright to execute JavaScript and capture the fully-rendered DOM.
+
+### When JS Rendering is Needed
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                 JS RENDERING DETECTION                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  The crawler automatically detects when JS rendering is needed  │
+│  by looking for common SPA framework patterns:                  │
+│                                                                  │
+│  REACT                          VUE                             │
+│  ─────                          ───                             │
+│  • <div id="root"></div>        • <div id="app"></div>         │
+│  • data-reactroot               • data-v- attributes            │
+│  • __NEXT_DATA__ (Next.js)      • __NUXT__ (Nuxt.js)           │
+│                                                                  │
+│  ANGULAR                        SVELTE                          │
+│  ───────                        ──────                          │
+│  • ng-app attribute             • svelte- classes               │
+│  • _nghost attributes           • __svelte_                     │
+│  • ng-version                                                    │
+│                                                                  │
+│  GENERIC SPA INDICATORS                                         │
+│  ─────────────────────                                          │
+│  • Empty body with JS includes                                  │
+│  • "Loading..." placeholder text                                │
+│  • Minimal HTML with large JS bundles                           │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                 JS RENDERING ARCHITECTURE                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│                      ┌─────────────────┐                        │
+│                      │  HybridFetcher  │                        │
+│                      │  (Entry Point)  │                        │
+│                      └────────┬────────┘                        │
+│                               │                                  │
+│            ┌──────────────────┼──────────────────┐              │
+│            │                  │                  │              │
+│            ▼                  ▼                  ▼              │
+│  ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐  │
+│  │   HTTP Fetch    │ │ JS Requirement  │ │   JSRenderer    │  │
+│  │   (Fast Path)   │ │    Detector     │ │  (Slow Path)    │  │
+│  └────────┬────────┘ └────────┬────────┘ └────────┬────────┘  │
+│           │                   │                   │            │
+│           │          ┌───────┴───────┐           │            │
+│           │          │ Needs JS?     │           │            │
+│           │          └───────┬───────┘           │            │
+│           │                  │                   │            │
+│           │        ┌────────┴────────┐          │            │
+│           │        │                 │          │            │
+│           │       NO                YES         │            │
+│           │        │                 │          │            │
+│           ▼        ▼                 ▼          │            │
+│      Return HTML directly      Use JSRenderer ◄─┘            │
+│                                      │                        │
+│                                      ▼                        │
+│                              ┌─────────────────┐              │
+│                              │  BrowserPool    │              │
+│                              │                 │              │
+│                              │ • Chromium      │              │
+│                              │ • Firefox       │              │
+│                              │ • WebKit        │              │
+│                              └────────┬────────┘              │
+│                                       │                        │
+│                                       ▼                        │
+│                              ┌─────────────────┐              │
+│                              │ Rendered HTML   │              │
+│                              │ + Screenshots   │              │
+│                              │ + Console Logs  │              │
+│                              └─────────────────┘              │
+│                                                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Wait Strategies
+
+The renderer supports multiple strategies for determining when a page is "ready":
+
+| Strategy | Description | Best For |
+|----------|-------------|----------|
+| `load` | Wait for window.onload | Simple pages |
+| `domcontentloaded` | Wait for DOMContentLoaded | Static content |
+| `networkidle` | Wait until no network requests for 500ms | API-heavy SPAs |
+| `selector` | Wait for specific CSS selector to appear | Known content markers |
+| `function` | Wait for custom JS function to return true | Complex conditions |
+
+### Python API
+
+```python
+from crawler.core import (
+    JSRenderer,
+    BrowserPool,
+    HybridFetcher,
+    JSRequirementDetector,
+    RenderConfig,
+    WaitStrategy,
+)
+
+# Basic rendering
+async with JSRenderer() as renderer:
+    result = await renderer.render("https://spa-example.com")
+    print(f"Status: {result.status_code}")
+    print(f"HTML length: {len(result.html)}")
+    print(f"Render time: {result.render_time_ms}ms")
+    print(f"Console logs: {result.console_logs}")
+
+# With custom configuration
+config = RenderConfig(
+    wait_strategy=WaitStrategy.NETWORKIDLE,
+    timeout_ms=30000,
+    viewport_width=1920,
+    viewport_height=1080,
+    user_agent="MyBot/1.0",
+    block_resources=["image", "media", "font"],  # Speed up rendering
+    capture_screenshot=True,
+)
+
+async with JSRenderer() as renderer:
+    result = await renderer.render("https://example.com", config)
+    if result.screenshot:
+        with open("screenshot.png", "wb") as f:
+            f.write(result.screenshot)
+
+# Smart rendering (only when needed)
+async with JSRenderer() as renderer:
+    # First fetch with HTTP
+    http_html = "<html>..."  # From regular HTTP fetch
+
+    # Check if JS rendering is needed
+    result = await renderer.render_if_needed(
+        url="https://example.com",
+        initial_html=http_html,
+    )
+
+    if result.was_rendered:
+        print("Page required JS rendering")
+    else:
+        print("HTTP fetch was sufficient")
+
+# Browser pool for high-volume rendering
+async with BrowserPool(
+    max_browsers=3,
+    max_contexts_per_browser=5,
+    browser_type="chromium",  # or "firefox", "webkit"
+) as pool:
+    # Acquire browser context
+    async with pool.acquire() as context:
+        page = await context.new_page()
+        await page.goto("https://example.com")
+        content = await page.content()
+
+# Hybrid fetcher (combines HTTP + JS rendering)
+async with HybridFetcher(
+    js_renderer=renderer,
+    http_timeout=10.0,
+) as fetcher:
+    # Automatically uses JS rendering when needed
+    result = await fetcher.fetch("https://spa-example.com")
+    print(f"Used JS: {result.used_js_rendering}")
+    print(f"HTML: {result.html[:500]}...")
+```
+
+### Installation
+
+```bash
+# Install Playwright
+pip install playwright
+
+# Install browser binaries
+playwright install chromium  # or: playwright install firefox webkit
+```
+
+### Configuration Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `browser_type` | `chromium` | Browser engine: `chromium`, `firefox`, `webkit` |
+| `headless` | `True` | Run browser without GUI |
+| `timeout_ms` | `30000` | Page load timeout |
+| `wait_strategy` | `networkidle` | When to consider page loaded |
+| `viewport_width` | `1280` | Browser viewport width |
+| `viewport_height` | `720` | Browser viewport height |
+| `block_resources` | `[]` | Resource types to block for speed |
+| `capture_screenshot` | `False` | Take screenshot after render |
+| `capture_console` | `True` | Capture browser console logs |
+
+---
+
+## Distributed Crawling
+
+For large-scale crawling operations, the distributed crawling system enables multiple workers to coordinate and process URLs in parallel across machines.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                 DISTRIBUTED CRAWLING SYSTEM                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│                    ┌─────────────────────┐                      │
+│                    │ DistributedCrawl    │                      │
+│                    │     Manager         │                      │
+│                    │                     │                      │
+│                    │ • Create jobs       │                      │
+│                    │ • Monitor progress  │                      │
+│                    │ • Collect results   │                      │
+│                    └──────────┬──────────┘                      │
+│                               │                                  │
+│                               ▼                                  │
+│                    ┌─────────────────────┐                      │
+│                    │       REDIS         │                      │
+│                    │                     │                      │
+│                    │ • URL Queue         │                      │
+│                    │ • Worker Registry   │                      │
+│                    │ • Job State         │                      │
+│                    │ • Leader Lock       │                      │
+│                    └──────────┬──────────┘                      │
+│                               │                                  │
+│          ┌────────────────────┼────────────────────┐            │
+│          │                    │                    │            │
+│          ▼                    ▼                    ▼            │
+│  ┌───────────────┐   ┌───────────────┐   ┌───────────────┐    │
+│  │   Worker 1    │   │   Worker 2    │   │   Worker 3    │    │
+│  │   (Leader)    │   │               │   │               │    │
+│  │               │   │               │   │               │    │
+│  │ • Claim URLs  │   │ • Claim URLs  │   │ • Claim URLs  │    │
+│  │ • Fetch pages │   │ • Fetch pages │   │ • Fetch pages │    │
+│  │ • Heartbeat   │   │ • Heartbeat   │   │ • Heartbeat   │    │
+│  │ • Coordinate  │   │               │   │               │    │
+│  └───────────────┘   └───────────────┘   └───────────────┘    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key Components
+
+#### 1. DistributedQueue
+
+The URL queue manages URL distribution across workers with atomic operations:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    DISTRIBUTED QUEUE                             │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  OPERATIONS (all atomic)                                        │
+│  ───────────────────────                                        │
+│                                                                  │
+│  add_url(task)                                                   │
+│    └──► Add URL if not already queued/visited                   │
+│    └──► Sets priority for ordering                              │
+│                                                                  │
+│  claim_url(worker_id)                                           │
+│    └──► Atomically pop highest priority URL                     │
+│    └──► Mark as processing by this worker                       │
+│    └──► Set claim timestamp for timeout detection               │
+│                                                                  │
+│  complete_url(url, success)                                     │
+│    └──► Mark URL as completed/failed                            │
+│    └──► Release from processing state                           │
+│                                                                  │
+│  recover_stale_urls()                                           │
+│    └──► Find URLs claimed but not completed (timeout)           │
+│    └──► Re-queue for another worker to process                  │
+│                                                                  │
+│  REDIS KEYS                                                      │
+│  ──────────                                                      │
+│  job:{id}:pending     - Sorted set (priority queue)             │
+│  job:{id}:processing  - Hash (url -> worker_id)                 │
+│  job:{id}:completed   - Set (finished URLs)                     │
+│  job:{id}:failed      - Set (failed URLs)                       │
+│  job:{id}:seen        - Set (all URLs ever added)               │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 2. WorkerCoordinator
+
+Manages worker registration, heartbeats, and leader election:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    WORKER COORDINATION                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  HEARTBEATS                                                      │
+│  ──────────                                                      │
+│  • Workers send heartbeat every N seconds                       │
+│  • Heartbeat includes: URLs processed, errors, last activity    │
+│  • Missing heartbeats = worker presumed dead                    │
+│                                                                  │
+│  LEADER ELECTION                                                 │
+│  ───────────────                                                 │
+│  • Redis SETNX for distributed lock                             │
+│  • Leader performs coordination tasks:                          │
+│    - Cleanup dead workers                                       │
+│    - Recover stale URLs                                         │
+│    - Publish global stats                                       │
+│  • Lock auto-expires (TTL) if leader dies                       │
+│                                                                  │
+│  WORKER STATES                                                   │
+│  ─────────────                                                   │
+│  IDLE       → Waiting for work                                  │
+│  ACTIVE     → Processing URLs                                   │
+│  PAUSED     → Temporarily stopped                               │
+│  STOPPING   → Graceful shutdown in progress                     │
+│  DEAD       → No heartbeat, presumed failed                     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Python API
+
+```python
+from crawler.core import (
+    DistributedQueue,
+    DistributedCrawlManager,
+    CrawlerWorker,
+    WorkerCoordinator,
+    CrawlJob,
+    URLTask,
+    JobState,
+)
+import redis.asyncio as redis
+
+# Create a distributed crawl job
+async def create_job():
+    redis_client = redis.from_url("redis://localhost:6379/0")
+
+    manager = DistributedCrawlManager(redis_client)
+
+    # Create job with seed URLs
+    job = await manager.create_job(
+        seed_urls=["https://example.com", "https://example.com/about"],
+        job_id="my-crawl-001",
+        max_urls=10000,
+        max_depth=5,
+    )
+
+    print(f"Job created: {job.job_id}")
+    print(f"State: {job.state}")
+
+    return job
+
+# Run a worker
+async def run_worker(job_id: str):
+    redis_client = redis.from_url("redis://localhost:6379/0")
+
+    worker = CrawlerWorker(
+        redis_client=redis_client,
+        job_id=job_id,
+        worker_id="worker-1",  # Unique per worker
+        heartbeat_interval=5.0,
+        claim_timeout=300.0,   # 5 minutes to process a URL
+    )
+
+    # Start worker (runs until job complete or stopped)
+    await worker.start()
+
+# Monitor job progress
+async def monitor_job(job_id: str):
+    redis_client = redis.from_url("redis://localhost:6379/0")
+    manager = DistributedCrawlManager(redis_client)
+
+    while True:
+        status = await manager.get_job_status(job_id)
+
+        print(f"Pending: {status['pending_urls']}")
+        print(f"Processing: {status['processing_urls']}")
+        print(f"Completed: {status['completed_urls']}")
+        print(f"Failed: {status['failed_urls']}")
+        print(f"Workers: {status['active_workers']}")
+
+        if status['state'] == JobState.COMPLETED:
+            break
+
+        await asyncio.sleep(5)
+
+# Direct queue operations
+async def queue_operations():
+    redis_client = redis.from_url("redis://localhost:6379/0")
+    queue = DistributedQueue(redis_client, job_id="my-crawl-001")
+
+    # Add URLs with priority
+    await queue.add_url(URLTask(
+        url="https://example.com/important",
+        depth=0,
+        priority=10,  # Higher = processed first
+    ))
+
+    # Claim a URL for processing
+    task = await queue.claim_url(worker_id="worker-1")
+    if task:
+        print(f"Claimed: {task.url}")
+
+        # Process the URL...
+
+        # Mark as complete
+        await queue.complete_url(task.url, success=True)
+
+    # Recover timed-out URLs
+    recovered = await queue.recover_stale_urls()
+    print(f"Recovered {recovered} stale URLs")
+```
+
+### Running Multiple Workers
+
+```bash
+# Terminal 1: Create job
+python -c "
+import asyncio
+from my_crawler import create_job
+asyncio.run(create_job())
+"
+
+# Terminal 2: Worker 1
+WORKER_ID=worker-1 python -m crawler.worker --job-id my-crawl-001
+
+# Terminal 3: Worker 2
+WORKER_ID=worker-2 python -m crawler.worker --job-id my-crawl-001
+
+# Terminal 4: Worker 3 (on different machine)
+WORKER_ID=worker-3 REDIS_URL=redis://192.168.1.100:6379 \
+    python -m crawler.worker --job-id my-crawl-001
+```
+
+### Job States
+
+| State | Description |
+|-------|-------------|
+| `PENDING` | Job created, not started |
+| `RUNNING` | Workers actively processing |
+| `PAUSED` | Temporarily stopped |
+| `COMPLETED` | All URLs processed |
+| `FAILED` | Job failed (too many errors) |
+| `CANCELLED` | Manually cancelled |
+
+---
+
+## Scheduled Recrawling
+
+The scheduled recrawling system enables periodic re-crawling of URLs to detect content changes. It supports cron-like scheduling, adaptive intervals based on change frequency, and sitemap-based scheduling hints.
+
+### Why Scheduled Recrawling?
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    USE CASES                                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. NEWS MONITORING                                              │
+│     └──► Check news sites every 15 minutes for new articles     │
+│                                                                  │
+│  2. PRICE TRACKING                                               │
+│     └──► Monitor e-commerce prices daily                        │
+│                                                                  │
+│  3. COMPLIANCE CHECKING                                          │
+│     └──► Verify terms of service weekly                         │
+│                                                                  │
+│  4. SEO MONITORING                                               │
+│     └──► Track competitor content changes                       │
+│                                                                  │
+│  5. ARCHIVAL                                                     │
+│     └──► Capture snapshots of pages over time                   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Scheduling Options
+
+#### 1. Cron Expressions
+
+Standard cron syntax for precise scheduling:
+
+```
+┌───────────── minute (0 - 59)
+│ ┌───────────── hour (0 - 23)
+│ │ ┌───────────── day of month (1 - 31)
+│ │ │ ┌───────────── month (1 - 12)
+│ │ │ │ ┌───────────── day of week (0 - 6, 0 = Sunday)
+│ │ │ │ │
+│ │ │ │ │
+* * * * *
+
+Examples:
+─────────
+0 * * * *       Every hour at minute 0
+*/15 * * * *    Every 15 minutes
+0 9 * * 1-5     9 AM on weekdays
+0 0 1 * *       First day of each month at midnight
+0 */6 * * *     Every 6 hours
+```
+
+#### 2. Interval-Based
+
+Simple time intervals:
+
+```python
+from crawler.core import ScheduleInterval
+
+# Predefined intervals
+ScheduleInterval.MINUTES_15    # Every 15 minutes
+ScheduleInterval.HOURLY        # Every hour
+ScheduleInterval.DAILY         # Once a day
+ScheduleInterval.WEEKLY        # Once a week
+ScheduleInterval.MONTHLY       # Once a month
+```
+
+#### 3. Adaptive Scheduling
+
+Automatically adjusts recrawl frequency based on how often content actually changes:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    ADAPTIVE SCHEDULING                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Initial interval: 1 hour                                       │
+│                                                                  │
+│  Crawl 1: No change   → Interval × 1.5 = 1.5 hours             │
+│  Crawl 2: No change   → Interval × 1.5 = 2.25 hours            │
+│  Crawl 3: CHANGED!    → Interval × 0.5 = 1.125 hours           │
+│  Crawl 4: No change   → Interval × 1.5 = 1.69 hours            │
+│  ...                                                             │
+│                                                                  │
+│  Bounds:                                                         │
+│  • Min interval: 15 minutes (never faster)                      │
+│  • Max interval: 7 days (never slower)                          │
+│                                                                  │
+│  Benefits:                                                       │
+│  • Frequently-changing pages crawled more often                 │
+│  • Stable pages crawled less often                              │
+│  • Automatically optimizes crawl resources                      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                 RECRAWL SCHEDULER SYSTEM                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│              ┌───────────────────────────┐                      │
+│              │     RecrawlScheduler      │                      │
+│              │                           │                      │
+│              │ • Manage URL schedules    │                      │
+│              │ • Check for due URLs      │                      │
+│              │ • Trigger recrawls        │                      │
+│              │ • Update intervals        │                      │
+│              └─────────────┬─────────────┘                      │
+│                            │                                     │
+│            ┌───────────────┼───────────────┐                    │
+│            │               │               │                    │
+│            ▼               ▼               ▼                    │
+│  ┌─────────────────┐ ┌───────────┐ ┌─────────────────┐        │
+│  │  CronSchedule   │ │  Redis    │ │ SitemapBased    │        │
+│  │                 │ │  Store    │ │   Scheduler     │        │
+│  │ • Parse cron    │ │           │ │                 │        │
+│  │ • Next run time │ │ Schedules │ │ • Use lastmod   │        │
+│  │ • Validate      │ │ History   │ │ • Use changefreq│        │
+│  └─────────────────┘ │ Metrics   │ │ • Batch schedule│        │
+│                      └───────────┘ └─────────────────┘        │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │                  SCHEDULE RECORD                         │   │
+│  │                                                          │   │
+│  │  url: https://example.com/page                          │   │
+│  │  schedule_type: cron | interval | adaptive              │   │
+│  │  cron_expr: "0 */6 * * *"                               │   │
+│  │  interval_seconds: 21600                                │   │
+│  │  last_crawled: 2025-01-30T10:00:00Z                     │   │
+│  │  next_crawl: 2025-01-30T16:00:00Z                       │   │
+│  │  consecutive_no_change: 3                               │   │
+│  │  total_crawls: 47                                       │   │
+│  │  total_changes: 12                                      │   │
+│  │  enabled: true                                          │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Python API
+
+```python
+from crawler.core import (
+    RecrawlScheduler,
+    RecrawlSchedule,
+    CronSchedule,
+    ScheduleInterval,
+    AdaptiveScheduleConfig,
+    SitemapBasedScheduler,
+)
+import redis.asyncio as redis
+
+# Basic cron scheduling
+async def schedule_with_cron():
+    redis_client = redis.from_url("redis://localhost:6379/0")
+    scheduler = RecrawlScheduler(redis_client)
+
+    # Schedule URL with cron expression
+    schedule = await scheduler.add_url_schedule(
+        url="https://news.example.com",
+        interval="0 */2 * * *",  # Every 2 hours
+    )
+    print(f"Next crawl: {schedule.next_crawl}")
+
+# Interval-based scheduling
+async def schedule_with_interval():
+    redis_client = redis.from_url("redis://localhost:6379/0")
+    scheduler = RecrawlScheduler(redis_client)
+
+    # Schedule with predefined interval
+    await scheduler.add_url_schedule(
+        url="https://blog.example.com",
+        interval=ScheduleInterval.DAILY,
+    )
+
+    # Or with custom seconds
+    await scheduler.add_url_schedule(
+        url="https://prices.example.com",
+        interval=3600,  # Every hour
+    )
+
+# Adaptive scheduling
+async def schedule_adaptive():
+    redis_client = redis.from_url("redis://localhost:6379/0")
+
+    adaptive_config = AdaptiveScheduleConfig(
+        initial_interval=3600,      # Start with 1 hour
+        min_interval=900,           # Never faster than 15 minutes
+        max_interval=604800,        # Never slower than 1 week
+        increase_factor=1.5,        # Slow down by 50% when unchanged
+        decrease_factor=0.5,        # Speed up by 50% when changed
+    )
+
+    scheduler = RecrawlScheduler(
+        redis_client,
+        adaptive_config=adaptive_config,
+    )
+
+    await scheduler.add_url_schedule(
+        url="https://example.com",
+        interval=ScheduleInterval.HOURLY,
+        adaptive=True,  # Enable adaptive adjustment
+    )
+
+# Sitemap-based scheduling
+async def schedule_from_sitemap():
+    redis_client = redis.from_url("redis://localhost:6379/0")
+
+    sitemap_scheduler = SitemapBasedScheduler(redis_client)
+
+    # Import schedules from sitemap
+    await sitemap_scheduler.import_from_sitemap(
+        sitemap_url="https://example.com/sitemap.xml",
+        default_interval=ScheduleInterval.DAILY,
+    )
+    # Uses sitemap's changefreq and lastmod to set intelligent intervals:
+    # - changefreq: "hourly" → 1 hour interval
+    # - changefreq: "daily" → 24 hour interval
+    # - lastmod: recent → shorter interval
+
+# Run the scheduler
+async def run_scheduler():
+    redis_client = redis.from_url("redis://localhost:6379/0")
+    scheduler = RecrawlScheduler(redis_client)
+
+    # Define what happens when a URL is due
+    async def on_url_due(schedule: RecrawlSchedule):
+        print(f"Time to recrawl: {schedule.url}")
+
+        # Perform the crawl...
+        content_changed = await crawl_and_check(schedule.url)
+
+        # Report result (updates adaptive interval)
+        await scheduler.record_crawl_result(
+            url=schedule.url,
+            changed=content_changed,
+        )
+
+    # Start scheduler loop
+    await scheduler.run(
+        callback=on_url_due,
+        check_interval=60,  # Check for due URLs every minute
+    )
+
+# Query schedules
+async def query_schedules():
+    redis_client = redis.from_url("redis://localhost:6379/0")
+    scheduler = RecrawlScheduler(redis_client)
+
+    # Get all schedules
+    all_schedules = await scheduler.list_schedules()
+
+    # Get schedules due now
+    due_now = await scheduler.get_due_urls()
+
+    # Get schedule for specific URL
+    schedule = await scheduler.get_schedule("https://example.com")
+    print(f"URL: {schedule.url}")
+    print(f"Last crawled: {schedule.last_crawled}")
+    print(f"Next crawl: {schedule.next_crawl}")
+    print(f"Change rate: {schedule.total_changes}/{schedule.total_crawls}")
+
+    # Disable/enable schedule
+    await scheduler.disable_schedule("https://example.com")
+    await scheduler.enable_schedule("https://example.com")
+
+    # Remove schedule
+    await scheduler.remove_schedule("https://example.com")
+```
+
+### Cron Expression Reference
+
+| Expression | Description |
+|------------|-------------|
+| `* * * * *` | Every minute |
+| `*/5 * * * *` | Every 5 minutes |
+| `0 * * * *` | Every hour |
+| `0 */2 * * *` | Every 2 hours |
+| `0 0 * * *` | Daily at midnight |
+| `0 9 * * 1-5` | Weekdays at 9 AM |
+| `0 0 * * 0` | Weekly on Sunday |
+| `0 0 1 * *` | Monthly on the 1st |
+| `0 0 1 1 *` | Yearly on Jan 1st |
+
+### Change Frequency to Interval Mapping
+
+When using sitemap-based scheduling, `changefreq` values are mapped to intervals:
+
+| changefreq | Default Interval |
+|------------|------------------|
+| `always` | 1 hour |
+| `hourly` | 1 hour |
+| `daily` | 24 hours |
+| `weekly` | 7 days |
+| `monthly` | 30 days |
+| `yearly` | 365 days |
+| `never` | Not scheduled |
 
 ---
 
