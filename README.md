@@ -55,8 +55,53 @@ else:
 - Public accessibility (no authentication required)
 - Presence of robots.txt (indicates expectation of bots)
 - Meta tags allowing/disallowing indexing
-- Terms of service analysis (when enabled)
+- **Terms of Service analysis (enabled by default)** - automatically analyzes ToS for crawling restrictions
 - Previous crawl history and any blocks received
+
+**Terms of Service Analysis:**
+
+The crawler **automatically analyzes Terms of Service** pages to detect crawling restrictions. This feature is **enabled by default** to ensure maximum legal compliance.
+
+```python
+from crawler.config import CFAAConfig
+from crawler.legal import CFAAChecker
+
+# ToS analysis is enabled by default
+cfaa_config = CFAAConfig(
+    enabled=True,
+    tos_analysis_enabled=True,        # Enabled by default
+    block_on_restrictive_tos=True,    # Block crawling if ToS prohibits it
+    tos_cache_ttl=86400,              # Cache ToS analysis for 24 hours
+    common_tos_paths=[                # Paths to check for ToS
+        "/terms",
+        "/terms-of-service",
+        "/tos",
+        "/legal/terms",
+        "/terms-and-conditions",
+        "/terms-of-use",
+    ],
+)
+
+# The checker automatically analyzes ToS
+checker = CFAAChecker(config=cfaa_config)
+
+# When checking authorization, ToS is analyzed automatically
+result = await checker.is_authorized(url)
+if not result.authorized and result.basis == "terms_of_service":
+    print(f"ToS prohibits crawling: {result.documentation}")
+
+# You can also analyze ToS text directly
+tos_analysis = checker.analyze_tos(tos_text, domain)
+print(f"Restrictive: {tos_analysis['is_restrictive']}")
+print(f"Restrictions: {tos_analysis['restrictions']}")
+```
+
+**What ToS analysis detects:**
+- Explicit prohibition of scraping/crawling
+- Prohibition of automated access
+- Requirements to use official APIs only
+- Rate limit mentions
+- Bot/spider restrictions
 
 #### GDPR/CCPA Support
 
