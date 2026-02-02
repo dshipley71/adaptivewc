@@ -1,6 +1,6 @@
 # Adaptive Structure Fingerprinting System
 
-An intelligent web structure fingerprinting system with adaptive learning, Ollama Cloud LLM integration, comprehensive verbose logging, and **ethical compliance** (CFAA, robots.txt RFC 9309, GDPR/CCPA, adaptive rate limiting).
+An intelligent web structure fingerprinting system with adaptive learning, Ollama Cloud LLM integration, comprehensive verbose logging, **ethical compliance** (CFAA, robots.txt RFC 9309, GDPR/CCPA, adaptive rate limiting), **content extraction**, and **change alerting with manual review**.
 
 ## Features
 
@@ -35,6 +35,33 @@ Automatically classifies structure changes:
 ### Ollama Cloud Integration
 
 Generate rich, human-readable descriptions of page structures using LLM.
+
+### Content Extraction
+
+Extract and save content using learned strategies:
+
+- **Strategy-based extraction** - Use CSS selectors learned from structure analysis
+- **Multiple output formats** - JSON, CSV, Markdown
+- **Batch processing** - Extract from multiple URLs efficiently
+- **Metadata inclusion** - URL, timestamp, extraction confidence
+
+### Change Alerting & Review Queue
+
+Monitor structure changes with intelligent alerting and manual review workflow:
+
+| Change Type | Auto-Approve | Action |
+|-------------|--------------|--------|
+| Cosmetic (>0.95) | Yes | Log only |
+| Minor (0.85-0.95) | Yes | Log + optional notification |
+| Moderate (0.70-0.85) | No | Queue for review |
+| Breaking (<0.70) | No | Alert + queue for review |
+
+**Review Queue Features:**
+- Redis-backed persistent queue
+- Filter by domain, classification, age
+- Approve/Reject/Skip workflow
+- Auto-adapt extraction strategies on approval
+- Webhook and email notifications
 
 ## Installation
 
@@ -86,6 +113,24 @@ fingerprint compare --url https://example.com --mode adaptive
 # Generate LLM description
 fingerprint describe --url https://example.com
 
+# Extract content and save to file
+fingerprint extract --url https://example.com --output ./extracted --format json
+
+# Extract content from multiple URLs
+fingerprint extract --urls urls.txt --output ./extracted --format csv
+
+# View pending review queue
+fingerprint review list --limit 50
+
+# Approve a pending review (auto-adapts extraction strategy)
+fingerprint review approve <item-id> --notes "Verified structure change"
+
+# Reject a pending review (keeps old strategy)
+fingerprint review reject <item-id> --notes "False positive"
+
+# Get review queue statistics
+fingerprint review stats
+
 # Verbose output
 fingerprint -vvv analyze --url https://example.com
 ```
@@ -96,6 +141,8 @@ fingerprint -vvv analyze --url https://example.com
 import asyncio
 from fingerprint.config import load_config
 from fingerprint.core.analyzer import StructureAnalyzer
+from fingerprint.extraction import ContentExtractor, FileWriter
+from fingerprint.alerting import ChangeMonitor, ReviewQueue
 
 async def main():
     config = load_config()
@@ -113,6 +160,47 @@ async def main():
     print(f"Similarity: {changes.similarity:.3f}")
     print(f"Classification: {changes.classification.value}")
     print(f"Breaking: {changes.breaking}")
+
+    # Extract content using learned strategy
+    extractor = ContentExtractor(config)
+    result = await extractor.extract_with_structure(
+        url="https://example.com/article",
+        html=html_content,
+        structure=structure,
+    )
+    print(f"Extracted fields: {list(result.content.fields.keys())}")
+
+    # Save extracted content to file
+    writer = FileWriter(config.extraction)
+    file_path = await writer.save(result.content, format="json")
+    print(f"Saved to: {file_path}")
+
+    # Process change through alerting system
+    monitor = ChangeMonitor(config.alerting)
+    alert = await monitor.process_change(
+        url="https://example.com/article",
+        domain="example.com",
+        page_type="article",
+        change_analysis=changes,
+        old_version=3,
+        new_version=4,
+    )
+    if alert:
+        print(f"Alert created: {alert.severity.value}")
+
+    # Work with review queue
+    review_queue = ReviewQueue(config.redis)
+    pending = await review_queue.get_pending(limit=10)
+    print(f"Pending reviews: {len(pending)}")
+
+    # Approve a review (auto-adapts extraction strategy)
+    if pending:
+        item = await review_queue.approve(
+            pending[0].id,
+            reviewer="admin",
+            notes="Verified change",
+        )
+        print(f"Approved: {item.id}")
 
 asyncio.run(main())
 ```
@@ -160,6 +248,34 @@ legal:
     enabled: true
     pii_handling: "redact"
 
+# Content extraction
+extraction:
+  enabled: true
+  output_dir: "./extracted"
+  formats: ["json", "csv"]
+  include_metadata: true
+  filename_pattern: "{domain}_{page_type}_{timestamp}"
+
+# Change alerting and review
+alerting:
+  enabled: true
+  alert_on_breaking: true
+  alert_threshold: 0.70
+  review_queue:
+    enabled: true
+    auto_approve_cosmetic: true
+    auto_approve_minor: true
+    require_review_breaking: true
+  notifications:
+    log: true
+    webhook:
+      enabled: false
+      url: "https://your-webhook.example.com/alerts"
+    email:
+      enabled: false
+      smtp_host: "smtp.example.com"
+      recipients: ["alerts@example.com"]
+
 # Verbose logging
 verbose:
   enabled: true
@@ -187,7 +303,18 @@ fingerprint/
 │
 ├── storage/            # Redis persistence
 │   ├── structure_store.py  # Structure versioning
-│   └── embedding_store.py  # Embedding cache
+│   ├── embedding_store.py  # Embedding cache
+│   └── review_store.py     # Review queue persistence
+│
+├── extraction/         # Content extraction
+│   ├── extractor.py        # Strategy-based extraction
+│   ├── file_writer.py      # Output file handling
+│   └── formatters.py       # JSON, CSV, Markdown formatters
+│
+├── alerting/           # Change alerts and review
+│   ├── change_monitor.py   # Change detection alerts
+│   ├── review_queue.py     # Manual review workflow
+│   └── notifications.py    # Log, webhook, email notifiers
 │
 ├── compliance/         # Ethical compliance
 │   ├── robots_parser.py    # RFC 9309 robots.txt
@@ -275,6 +402,19 @@ Output format:
   - mode: rules
   - similarity: 0.94
   - classification: cosmetic
+[2024-01-15T10:30:02Z] [EXTRACT:START] Extracting content for example.com/article
+[2024-01-15T10:30:02Z] [EXTRACT:FIELD] Extracted: title
+  - selector: h1.post-title
+  - confidence: 0.95
+[2024-01-15T10:30:02Z] [EXTRACT:COMPLETE] Extraction complete
+  - fields: 5
+  - confidence: 0.91
+[2024-01-15T10:30:02Z] [FILEWRITER:SAVE] Saving extracted content
+  - format: json
+  - path: ./extracted/example.com_article_20240115.json
+[2024-01-15T10:30:03Z] [ALERT:CHECK] Checking for alert conditions
+[2024-01-15T10:30:03Z] [ALERT:SKIP] No alert needed (cosmetic change)
+[2024-01-15T10:30:03Z] [REVIEW:AUTO_APPROVE] Auto-approved cosmetic change
 ```
 
 ## API Reference
@@ -340,6 +480,8 @@ See `AGENTS.md` for complete implementation specifications.
 | Adaptive | `fingerprint/adaptive/AGENTS.md` |
 | ML | `fingerprint/ml/AGENTS.md` |
 | Storage | `fingerprint/storage/AGENTS.md` |
+| Extraction | `fingerprint/extraction/AGENTS.md` |
+| Alerting | `fingerprint/alerting/AGENTS.md` |
 | Compliance | `fingerprint/compliance/AGENTS.md` |
 | Legal | `fingerprint/legal/AGENTS.md` |
 
