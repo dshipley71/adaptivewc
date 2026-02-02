@@ -488,116 +488,291 @@ class StructureAnalyzer:
 
 ```python
 """
-HTTP fetcher with robots.txt compliance.
+HTTP fetcher with full compliance pipeline.
+
+All fetches pass through the ethical compliance pipeline:
+1. CFAA authorization check
+2. ToS check
+3. robots.txt check (RFC 9309)
+4. Rate limiting with Crawl-delay
+5. HTTP fetch
+6. Anti-bot detection
+7. GDPR/CCPA compliance
 
 Verbose logging pattern:
 [FETCH:OPERATION] Message
 """
 
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import urlparse
+
 import httpx
 
-from fingerprint.config import HttpConfig
+from fingerprint.config import Config
 from fingerprint.core.verbose import get_logger
-from fingerprint.exceptions import FetchError, HTTPStatusError, HTTPTimeoutError
+from fingerprint.compliance.robots_parser import RobotsChecker
+from fingerprint.compliance.rate_limiter import RateLimiter
+from fingerprint.compliance.bot_detector import BotDetector
+from fingerprint.legal.cfaa_checker import CFAAChecker
+from fingerprint.legal.tos_checker import ToSChecker
+from fingerprint.legal.gdpr_handler import GDPRHandler
+from fingerprint.legal.ccpa_handler import CCPAHandler
+from fingerprint.exceptions import (
+    FetchError,
+    HTTPStatusError,
+    HTTPTimeoutError,
+    RobotsBlockedError,
+    CFAAViolationError,
+    ToSViolationError,
+    BotDetectedError,
+)
 
 
-class HTTPFetcher:
+@dataclass
+class FetchResult:
+    """Result of a fetch operation."""
+    url: str
+    success: bool
+    content: str = ""
+    status_code: int = 0
+    blocked: bool = False
+    block_reason: str = ""
+    response_time: float = 0.0
+
+    @classmethod
+    def success_result(cls, url: str, content: str, status_code: int, response_time: float) -> "FetchResult":
+        return cls(url=url, success=True, content=content, status_code=status_code, response_time=response_time)
+
+    @classmethod
+    def blocked_result(cls, url: str, reason: str) -> "FetchResult":
+        return cls(url=url, success=False, blocked=True, block_reason=reason)
+
+    @classmethod
+    def error_result(cls, url: str, error: str) -> "FetchResult":
+        return cls(url=url, success=False, block_reason=error)
+
+
+class ComplianceFetcher:
     """
-    HTTP client for fetching web pages.
+    HTTP fetcher with full ethical compliance pipeline.
 
-    Features:
-    - Configurable user agent
-    - Timeout handling
-    - Retry logic
-    - robots.txt compliance (optional)
+    IMPORTANT: All fetches MUST go through this fetcher.
+    Direct HTTP requests bypass compliance and are forbidden.
 
     Usage:
-        fetcher = HTTPFetcher(config.http)
-        html = await fetcher.fetch("https://example.com")
+        fetcher = ComplianceFetcher(config)
+        result = await fetcher.fetch("https://example.com")
+        if result.success:
+            html = result.content
     """
 
-    def __init__(self, config: HttpConfig):
+    def __init__(self, config: Config):
         self.config = config
         self.logger = get_logger()
 
+        # HTTP client
         self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(config.timeout),
-            headers={"User-Agent": config.user_agent},
+            timeout=httpx.Timeout(config.http.timeout),
+            headers={"User-Agent": config.http.user_agent},
             follow_redirects=True,
         )
 
-        self.logger.debug(
+        # Compliance components
+        self.cfaa_checker = CFAAChecker(config)
+        self.tos_checker = ToSChecker(config)
+        self.robots_checker = RobotsChecker(config)
+        self.rate_limiter = RateLimiter(config)
+        self.bot_detector = BotDetector(config)
+        self.gdpr_handler = GDPRHandler(config)
+        self.ccpa_handler = CCPAHandler(config)
+
+        self.logger.info(
             "FETCH", "INIT",
-            "HTTP client initialized",
-            user_agent=config.user_agent,
-            timeout=config.timeout,
+            "Compliance fetcher initialized",
+            user_agent=config.http.user_agent,
         )
 
-    async def fetch(self, url: str) -> str:
+    async def fetch(self, url: str) -> FetchResult:
         """
-        Fetch URL and return HTML content.
+        Fetch URL through full compliance pipeline.
+
+        Pipeline order:
+        1. CFAA check -> 2. ToS check -> 3. robots.txt -> 4. Rate limit
+        5. HTTP fetch -> 6. Anti-bot -> 7. GDPR/CCPA
 
         Args:
             url: URL to fetch
 
         Returns:
-            HTML content as string
-
-        Raises:
-            HTTPTimeoutError: Request timed out
-            HTTPStatusError: Non-2xx status code
-            FetchError: Other fetch errors
+            FetchResult with content or block reason
 
         Verbose output:
+            [CFAA:CHECK] Checking authorization
+            [CFAA:AUTHORIZED] Access authorized
+            [TOS:CHECK] Checking Terms of Service
+            [TOS:ALLOWED] No restrictive directives
+            [ROBOTS:CHECK] Checking robots.txt
+            [ROBOTS:ALLOWED] Path allowed
+            [RATELIMIT:ACQUIRE] Acquiring slot
+            [RATELIMIT:WAIT] Waiting 1.5s
             [FETCH:REQUEST] GET https://example.com
-            [FETCH:RESPONSE] Status 200, 45230 bytes
+            [FETCH:RESPONSE] 200 OK (1.2s, 45KB)
+            [ANTIBOT:CHECK] Scanning for bot detection
+            [ANTIBOT:CLEAR] No detection found
+            [GDPR:SCAN] Scanning for PII
+            [GDPR:CLEAR] No PII detected
         """
-        self.logger.info("FETCH", "REQUEST", f"GET {url}")
+        domain = self._get_domain(url)
 
-        retries = 0
-        last_error: Exception | None = None
+        # ===== 1. CFAA AUTHORIZATION CHECK =====
+        cfaa_result = await self.cfaa_checker.is_authorized(url)
+        if not cfaa_result.authorized:
+            self.logger.warn(
+                "FETCH", "CFAA_BLOCKED",
+                f"CFAA blocked: {cfaa_result.reason}",
+            )
+            return FetchResult.blocked_result(url, f"CFAA: {cfaa_result.reason}")
 
-        while retries <= self.config.max_retries:
-            try:
-                response = await self.client.get(url)
+        # ===== 2. robots.txt CHECK (RFC 9309) =====
+        if not await self.robots_checker.is_allowed(url):
+            self.logger.info("FETCH", "ROBOTS_BLOCKED", "Blocked by robots.txt")
+            return FetchResult.blocked_result(url, "robots.txt")
 
-                self.logger.debug(
-                    "FETCH", "RESPONSE",
-                    f"Status {response.status_code}, {len(response.content)} bytes",
-                    status=response.status_code,
-                    content_type=response.headers.get("content-type", ""),
+        # Get Crawl-delay from robots.txt
+        crawl_delay = await self.robots_checker.get_crawl_delay(domain)
+        if crawl_delay:
+            self.rate_limiter.set_crawl_delay(domain, crawl_delay)
+
+        # ===== 3. RATE LIMITING =====
+        await self.rate_limiter.acquire(domain)
+
+        # ===== 4. HTTP FETCH =====
+        try:
+            import time
+            start_time = time.time()
+
+            self.logger.info("FETCH", "REQUEST", f"GET {url}")
+            response = await self.client.get(url)
+            response_time = time.time() - start_time
+
+            self.logger.info(
+                "FETCH", "RESPONSE",
+                f"Status {response.status_code} ({response_time:.2f}s, {len(response.content)} bytes)",
+            )
+
+            # Check for HTTP errors
+            if response.status_code >= 400:
+                self.rate_limiter.report_error(domain, response.status_code)
+
+                if response.status_code == 429:
+                    retry_after = response.headers.get("Retry-After")
+                    if retry_after:
+                        self.rate_limiter.backoff(domain, float(retry_after))
+                    else:
+                        self.rate_limiter.backoff(domain)
+                    return FetchResult.blocked_result(url, f"Rate limited (429)")
+
+                return FetchResult.error_result(url, f"HTTP {response.status_code}")
+
+        except httpx.TimeoutException as e:
+            self.rate_limiter.report_error(domain)
+            self.logger.error("FETCH", "TIMEOUT", str(e))
+            raise HTTPTimeoutError(f"Timeout fetching {url}")
+
+        except httpx.HTTPError as e:
+            self.rate_limiter.report_error(domain)
+            self.logger.error("FETCH", "ERROR", str(e))
+            raise FetchError(f"Error fetching {url}: {e}")
+
+        # ===== 5. ANTI-BOT DETECTION =====
+        bot_check = await self.bot_detector.check(response)
+        if bot_check.detected:
+            self.rate_limiter.backoff(domain)
+            self.logger.warn(
+                "FETCH", "BOT_DETECTED",
+                f"Bot detection: {bot_check.detection_type}",
+            )
+
+            if self.bot_detector.should_stop(bot_check):
+                return FetchResult.blocked_result(
+                    url,
+                    f"Bot detected: {bot_check.detection_type}",
                 )
 
-                if response.status_code >= 400:
-                    raise HTTPStatusError(
-                        response.status_code,
-                        f"Error fetching {url}",
-                    )
+        # ===== 6. ToS CHECK (on response) =====
+        tos_result = await self.tos_checker.check(url, response)
+        if not tos_result.allowed:
+            self.logger.info(
+                "FETCH", "TOS_BLOCKED",
+                f"ToS directive: {tos_result.directive}",
+            )
+            return FetchResult.blocked_result(url, f"ToS: {tos_result.directive}")
 
-                return response.text
+        # ===== 7. GDPR/CCPA COMPLIANCE =====
+        if self.config.legal.gdpr.enabled:
+            response = await self.gdpr_handler.process(response)
 
-            except httpx.TimeoutException as e:
-                last_error = HTTPTimeoutError(f"Timeout fetching {url}: {e}")
-                retries += 1
-                self.logger.warn(
-                    "FETCH", "RETRY",
-                    f"Timeout, retry {retries}/{self.config.max_retries}",
-                )
+        if self.config.legal.ccpa.enabled:
+            response = await self.ccpa_handler.process(response)
 
-            except httpx.HTTPError as e:
-                last_error = FetchError(f"HTTP error fetching {url}: {e}")
-                retries += 1
-                self.logger.warn(
-                    "FETCH", "RETRY",
-                    f"HTTP error, retry {retries}/{self.config.max_retries}",
-                )
+        # ===== SUCCESS =====
+        self.rate_limiter.report_success(domain, response_time)
 
-        raise last_error or FetchError(f"Failed to fetch {url}")
+        return FetchResult.success_result(
+            url=url,
+            content=response.text,
+            status_code=response.status_code,
+            response_time=response_time,
+        )
+
+    def _get_domain(self, url: str) -> str:
+        """Extract domain from URL."""
+        parsed = urlparse(url)
+        return parsed.netloc
 
     async def close(self) -> None:
-        """Close the HTTP client."""
+        """Close the HTTP client and cleanup."""
         await self.client.aclose()
-        self.logger.debug("FETCH", "CLOSE", "HTTP client closed")
+        self.logger.debug("FETCH", "CLOSE", "Compliance fetcher closed")
+
+
+# IMPORTANT: Legacy HTTPFetcher for internal use only
+# All external fetches MUST use ComplianceFetcher
+
+class HTTPFetcher:
+    """
+    Low-level HTTP client for internal use ONLY.
+
+    WARNING: This bypasses the compliance pipeline.
+    Only use for:
+    - Fetching robots.txt
+    - Internal health checks
+
+    For all other fetches, use ComplianceFetcher.
+    """
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.logger = get_logger()
+
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(config.http.timeout),
+            headers={"User-Agent": config.http.user_agent},
+            follow_redirects=True,
+        )
+
+    async def fetch_raw(self, url: str) -> httpx.Response:
+        """
+        Fetch URL without compliance checks.
+
+        WARNING: Only for internal use (robots.txt, etc.)
+        """
+        self.logger.debug("FETCH", "RAW_REQUEST", f"GET {url} (bypassing compliance)")
+        return await self.client.get(url)
+
+    async def close(self) -> None:
+        await self.client.aclose()
 ```
 
 ---
