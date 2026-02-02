@@ -15,7 +15,7 @@ Websites evolve constantly: CSS classes change, JavaScript rewrites DOM structur
 ## Core Principles
 
 1. **Learn Once, Extract Many**: Capture site structure on first visit, reuse until changes detected
-2. **Dual Fingerprinting**: Combine rules-based and ML-based analysis for robust detection
+2. **Independent Fingerprinting Modes**: Choose from Rules, ML, or Adaptive modes (not combined)
 3. **Graceful Degradation**: Attempt adaptation before failing
 4. **Explainable Changes**: Every adaptation includes documented reasons
 5. **Compliance Preserved**: Adaptive behavior never bypasses rate limits or robots.txt
@@ -467,10 +467,9 @@ def detect(
 class ChangeAnalysis:
     """Complete analysis of changes between structures."""
 
-    # Similarity scores
-    rules_similarity: float
-    ml_similarity: float
-    combined_similarity: float
+    # Similarity (from one mode - not combined)
+    similarity: float
+    mode_used: str  # "rules", "ml", or "adaptive"
 
     # Classification
     classification: str  # "cosmetic", "minor", "moderate", "breaking"
@@ -486,6 +485,10 @@ class ChangeAnalysis:
 
     # Reason documentation
     reason: str  # Human-readable explanation
+
+    # Adaptive mode details (only populated in adaptive mode)
+    escalated: bool = False           # Did adaptive escalate to ML?
+    escalation_triggers: list[str] = field(default_factory=list)
 ```
 
 ---
@@ -772,82 +775,107 @@ def _compute_confidence(
 
 ---
 
-## Dual Fingerprinting System
+## Fingerprinting Modes
 
-### Overview
+The adaptive module provides three independent fingerprinting modes. You select one mode - they are **not combined**.
 
-The adaptive module uses two complementary fingerprinting approaches:
+### Mode Overview
 
-| Approach | Speed | Strengths | Weaknesses |
-|----------|-------|-----------|------------|
-| **Rules-Based** | Fast (~50ms) | Deterministic, interpretable, no dependencies | Sensitive to class renames |
-| **ML-Based** | Slower (~200ms) | Semantic understanding, robust to superficial changes | Requires embedding model |
+| Mode | Speed | Best For | Trade-offs |
+|------|-------|----------|------------|
+| **Rules** | ~15ms | Stable sites, high throughput | Sensitive to class renames |
+| **ML** | ~200ms | Sites with frequent CSS changes | Slower, requires embedding model |
+| **Adaptive** | ~15-200ms | Unknown/mixed sites | Starts fast, escalates when needed |
 
-### Combined Scoring
+### Mode Selection
 
-```python
-def compute_combined_similarity(
-    rules_similarity: float,
-    ml_similarity: float,
-    rules_weight: float = 0.4,
-    ml_weight: float = 0.6
-) -> float:
-    """
-    Combine rules-based and ML-based similarity scores.
-
-    Weights:
-    - Rules: 0.4 (fast, deterministic)
-    - ML: 0.6 (semantic understanding)
-
-    Rationale:
-    - ML weight higher because it handles class renames better
-    - Rules weight provides stability when ML is uncertain
-    """
-    return (rules_similarity * rules_weight) + (ml_similarity * ml_weight)
+```yaml
+# config.yaml
+fingerprinting:
+  mode: adaptive  # "rules", "ml", or "adaptive"
 ```
 
-### Verbose Comparison Pipeline
+### Rules-Based Mode
+
+Fast, deterministic comparison using DOM structure analysis.
 
 ```
-[COMPARE:START] Comparing structures for example.com/article
-  - Stored: v2, captured 2025-01-15
-  - Current: analyzing now
-
+[FINGERPRINT:MODE] Using RULES mode
 [COMPARE:RULES] Computing rules-based similarity
   - Tag similarity: 0.92
   - Class similarity: 0.75 (renames detected)
   - ID similarity: 0.95
   - Landmark similarity: 0.90
   - Region similarity: 0.85
-  - Combined rules similarity: 0.874
+[COMPARE:RULES:RESULT] Similarity: 0.874
+[COMPARE:CLASSIFY] Classification: MINOR
+[COMPARE:RESULT] Breaking: NO
+```
 
+### ML-Based Mode
+
+Semantic comparison using embeddings - robust to class renames.
+
+```
+[FINGERPRINT:MODE] Using ML mode
 [COMPARE:ML] Computing ML-based similarity
   - Generating description for stored structure...
   - Generating description for current structure...
   - Computing embeddings...
     - Stored embedding: 384 dims, norm=1.0
     - Current embedding: 384 dims, norm=1.0
-  - Cosine similarity: 0.912
-
-[COMPARE:COMBINE] Computing combined similarity
-  - Rules (weight=0.4): 0.874 * 0.4 = 0.350
-  - ML (weight=0.6): 0.912 * 0.6 = 0.547
-  - Combined: 0.897
-
-[COMPARE:CLASSIFY] Classifying change
-  - Similarity: 0.897
-  - Thresholds: cosmetic>0.95, minor>0.85, moderate>0.70
-  - Classification: MINOR (0.85 < 0.897 < 0.95)
-  - Breaking: NO
-
-[COMPARE:RESULT] Comparison complete
-  - Rules similarity: 0.874
-  - ML similarity: 0.912
-  - Combined: 0.897
-  - Classification: MINOR
-  - Breaking: NO
-  - Adaptation needed: NO (can reuse existing strategy)
+[COMPARE:ML:SIMILARITY] Cosine similarity: 0.912
+[COMPARE:ML:RESULT] Similarity: 0.912
+[COMPARE:CLASSIFY] Classification: MINOR
+[COMPARE:RESULT] Breaking: NO
 ```
+
+### Adaptive Mode (Recommended)
+
+Starts with fast rules-based, escalates to ML only when needed.
+
+**Escalation Triggers:**
+- Class change ratio > 15%
+- Rules similarity < 0.80
+- Domain flagged as volatile
+- Rename pattern detected
+
+```
+[ADAPTIVE:START] Starting adaptive comparison
+  - Domain: example.com
+  - Page type: article
+
+[ADAPTIVE:RULES] Running rules-based comparison
+[COMPARE:RULES] Computing similarity...
+  - Tag similarity: 0.91
+  - Class similarity: 0.52 (significant changes!)
+[ADAPTIVE:RULES:RESULT] Similarity: 0.72
+
+[ADAPTIVE:ANALYZE] Checking escalation triggers
+[ADAPTIVE:CHECK:CLASSES] Class change ratio: 38% - TRIGGERED
+[ADAPTIVE:CHECK:UNCERTAINTY] Similarity 0.72 < 0.80 - TRIGGERED
+
+[ADAPTIVE:TRIGGER] Escalation triggered
+  - CLASS_VOLATILITY: 38% of classes changed
+  - RULES_UNCERTAINTY: Similarity below threshold
+
+[ADAPTIVE:ESCALATE] Running ML comparison
+[COMPARE:ML:SIMILARITY] Cosine similarity: 0.89
+[ADAPTIVE:ML:RESULT] Similarity: 0.89
+
+[ADAPTIVE:RESULT] Using ML result
+  - Mode used: ML (escalated)
+  - Similarity: 0.89
+  - Classification: MINOR
+  - Total time: 215ms
+```
+
+### Important: Modes are Independent
+
+- **No weighted combination**: We do not combine rules and ML scores
+- **No parallel execution**: Adaptive runs rules first, then ML only if triggered
+- **Single result**: Returns one similarity score from one mode
+- **Clear provenance**: Result indicates which mode produced it
 
 ---
 

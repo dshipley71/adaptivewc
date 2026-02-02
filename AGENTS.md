@@ -7,7 +7,7 @@ An intelligent, ethical web crawler with legal compliance (CFAA/GDPR/CCPA), robo
 This adaptive web crawler is designed for responsible, large-scale web data collection. It automatically respects site policies (robots.txt, crawl-delay directives), implements user-configurable rate limiting to prevent denial of service, and adapts its behavior based on server responses.
 
 **Key Differentiators:**
-1. **Dual Fingerprinting System**: Combines rules-based DOM analysis with ML-based semantic embeddings for robust structure detection
+1. **Independent Fingerprinting Modes**: Three modes (Rules, ML, Adaptive) that operate independently - not combined
 2. **Ollama Cloud LLM Integration**: Uses Ollama Cloud API for intelligent structure descriptions and change analysis
 3. **Comprehensive Verbose Logging**: Every operation is logged with detailed context for debugging and monitoring
 4. **Adaptive Learning**: When a site's DOM changes, the crawler detects changes, adapts extraction strategies, and persists to Redis
@@ -1052,17 +1052,58 @@ description = await generator.generate(page_structure)
 
 ---
 
-## Dual Fingerprinting System
+## Fingerprinting Modes
 
-The crawler uses both rules-based and ML-based fingerprinting for robust structure detection.
+The crawler provides three independent fingerprinting modes. Each mode operates independently - they are **not combined** into a weighted score. You select one mode based on your use case.
 
-### Rules-Based Fingerprinting
+### Mode Overview
+
+| Mode | Latency | Best For | Trade-offs |
+|------|---------|----------|------------|
+| **Rules** | ~15ms | Stable sites, high throughput | Sensitive to class renames |
+| **ML** | ~200ms | Sites with frequent CSS changes | Requires embedding model, slower |
+| **Adaptive** | ~15-200ms | Unknown sites, mixed environments | Slightly more complex logic |
+
+### Configuration
+
+```yaml
+# config.yaml
+fingerprinting:
+  mode: adaptive  # "rules", "ml", or "adaptive"
+
+  # Adaptive mode settings
+  adaptive:
+    class_change_threshold: 0.15    # Trigger ML if >15% classes changed
+    rules_uncertainty_threshold: 0.80  # Trigger ML if rules similarity < 0.80
+    cache_ml_results: true          # Cache embeddings for reuse
+```
+
+```bash
+# Environment variable
+export CRAWLER_FINGERPRINT_MODE="adaptive"  # or "rules" or "ml"
+```
+
+---
+
+### Mode 1: Rules-Based (Default)
+
+Fast, deterministic fingerprinting using DOM structure analysis.
+
+**When to Use:**
+- High-throughput crawling where speed matters
+- Sites with stable CSS class names
+- When you need deterministic, reproducible results
+- Offline environments without embedding model access
 
 **Advantages:**
-- Fast (< 50ms per page)
-- Deterministic
+- Fast (~15ms per comparison)
+- Deterministic (same input = same output)
 - No external dependencies
-- Interpretable results
+- Interpretable results (can see exactly what changed)
+
+**Limitations:**
+- Sensitive to CSS class renames (site refactors break detection)
+- Cannot detect semantic similarity (different classes, same structure)
 
 **Components Analyzed:**
 ```
@@ -1073,7 +1114,7 @@ The crawler uses both rules-based and ML-based fingerprinting for robust structu
 
 2. CSS Classes
    - Class frequencies: {"container": 5, "article": 1, ...}
-   - Semantic class detection
+   - Semantic class detection (content, article, nav, etc.)
 
 3. Semantic Landmarks
    - HTML5: <header>, <nav>, <main>, <article>, <aside>, <footer>
@@ -1086,21 +1127,50 @@ The crawler uses both rules-based and ML-based fingerprinting for robust structu
    - Framework detection: React, Vue, Angular, Next.js, etc.
 ```
 
-### ML-Based Fingerprinting
+**Verbose Output:**
+```
+[FINGERPRINT:MODE] Using RULES mode
+[COMPARE:RULES] Computing rules-based similarity
+  - Tag similarity: 0.92
+  - Class similarity: 0.68 (significant class changes detected)
+  - Landmark similarity: 0.95
+  - Structure similarity: 0.88
+[COMPARE:RULES:RESULT] Similarity: 0.78
+[COMPARE:CLASSIFY] Classification: MODERATE (0.70 < 0.78 < 0.85)
+[COMPARE:RESULT] Breaking: NO
+```
+
+---
+
+### Mode 2: ML-Based
+
+Semantic fingerprinting using sentence transformer embeddings.
+
+**When to Use:**
+- Sites known to frequently rename CSS classes
+- When semantic similarity matters more than exact structure
+- Sites that undergo regular CSS refactoring
+- When you need rich, human-readable change descriptions
 
 **Advantages:**
-- Semantic understanding
-- Robust to superficial changes
-- Better handling of class renames
-- Rich descriptions for debugging
+- Robust to class renames (understands semantic meaning)
+- Better at detecting "same structure, different names"
+- Rich descriptions via Ollama Cloud LLM
+- Handles superficial changes gracefully
+
+**Limitations:**
+- Slower (~200ms per comparison)
+- Requires embedding model (90MB for MiniLM)
+- Non-deterministic (minor floating-point variations)
+- Ollama Cloud adds network latency for descriptions
 
 **Pipeline:**
 ```
 PageStructure
     │
     ▼
-RulesBasedDescriptionGenerator
-    │ (creates semantic text description)
+DescriptionGenerator (Rules or LLM)
+    │ (creates semantic text: "Article page with sidebar...")
     ▼
 SentenceTransformer (all-MiniLM-L6-v2)
     │ (encodes to 384-dim vector)
@@ -1108,74 +1178,320 @@ SentenceTransformer (all-MiniLM-L6-v2)
 StructureEmbedding
     │
     ▼
-Cosine Similarity Comparison
+Cosine Similarity (0.0 - 1.0)
 ```
 
-### Comparison Pipeline
+**Verbose Output:**
+```
+[FINGERPRINT:MODE] Using ML mode
+[COMPARE:ML] Computing ML-based similarity
+[COMPARE:ML:DESCRIBE] Generating description for stored structure
+  - Using: RulesBasedDescriptionGenerator
+  - Description: "Article page with semantic HTML5..."
+[COMPARE:ML:EMBED] Generating embedding
+  - Model: all-MiniLM-L6-v2
+  - Dimensions: 384
+[COMPARE:ML:DESCRIBE] Generating description for current structure
+  - Description: "Article page with refactored CSS..."
+[COMPARE:ML:EMBED] Generating embedding
+  - Dimensions: 384
+[COMPARE:ML:SIMILARITY] Computing cosine similarity
+  - Dot product: 0.912
+  - Similarity: 0.912
+[COMPARE:ML:RESULT] Similarity: 0.91
+[COMPARE:CLASSIFY] Classification: MINOR (0.85 < 0.91 < 0.95)
+[COMPARE:RESULT] Breaking: NO
+```
+
+---
+
+### Mode 3: Adaptive (Recommended for Production)
+
+Intelligent mode selection that starts with fast rules-based comparison and escalates to ML only when needed.
+
+**When to Use:**
+- Production environments with mixed site types
+- When you don't know site characteristics in advance
+- First-time visits to new domains
+- When you want optimal speed without sacrificing accuracy
+
+**How It Works:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    ADAPTIVE MODE FLOW                        │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+              ┌─────────────────────────┐
+              │  1. Run Rules-Based     │
+              │     Comparison (~15ms)  │
+              └─────────────────────────┘
+                            │
+                            ▼
+              ┌─────────────────────────┐
+              │  2. Analyze Results     │
+              │     Check triggers      │
+              └─────────────────────────┘
+                            │
+            ┌───────────────┴───────────────┐
+            │                               │
+            ▼                               ▼
+    ┌───────────────┐               ┌───────────────┐
+    │ NO TRIGGERS   │               │ TRIGGERS MET  │
+    │               │               │               │
+    │ Return rules  │               │ Run ML-based  │
+    │ result        │               │ comparison    │
+    │ (~15ms total) │               │ (~200ms total)│
+    └───────────────┘               └───────────────┘
+            │                               │
+            └───────────────┬───────────────┘
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │ Return Result │
+                    └───────────────┘
+```
+
+**Escalation Triggers (any one triggers ML):**
+
+| Trigger | Condition | Rationale |
+|---------|-----------|-----------|
+| **Class Volatility** | >15% of classes changed | Likely CSS refactor, ML handles renames |
+| **Rules Uncertainty** | Rules similarity < 0.80 | Rules result is ambiguous, need ML clarity |
+| **Known Volatile Site** | Domain flagged as volatile | Historical data shows frequent changes |
+| **Explicit Class Renames** | Detected rename patterns | e.g., `post-*` classes all disappeared |
+
+**Decision Logic:**
 
 ```python
-async def compare_structures(
+async def compare_adaptive(
     self,
     stored: PageStructure,
     current: PageStructure,
     verbose: bool = True
 ) -> ChangeAnalysis:
     """
-    Compare structures using dual fingerprinting.
+    Adaptive comparison: Rules first, ML if needed.
 
     Verbose Logging:
-    - [COMPARE:START] Comparing structures
-    - [COMPARE:RULES] Rules-based similarity: {score}
-    - [COMPARE:ML] ML-based similarity: {score}
-    - [COMPARE:COMBINE] Combined score: {score} (weights: rules={w1}, ml={w2})
-    - [COMPARE:RESULT] Classification: {type}, breaking={yes/no}
+    - [ADAPTIVE:START] Starting adaptive comparison
+    - [ADAPTIVE:RULES] Running rules-based comparison
+    - [ADAPTIVE:ANALYZE] Analyzing rules result for triggers
+    - [ADAPTIVE:TRIGGER] Trigger detected: {reason}
+    - [ADAPTIVE:ESCALATE] Escalating to ML comparison
+    - [ADAPTIVE:RESULT] Final result from {mode}
     """
 
-    # 1. Rules-based comparison
     if verbose:
-        self._log("[COMPARE:RULES] Computing rules-based similarity...")
-    rules_similarity = self.structure_analyzer.compare(stored, current)
-    if verbose:
-        self._log(f"[COMPARE:RULES] Similarity: {rules_similarity:.3f}")
+        self._log("[ADAPTIVE:START] Starting adaptive comparison")
+        self._log(f"  - Domain: {stored.domain}")
+        self._log(f"  - Page type: {stored.page_type}")
 
-    # 2. ML-based comparison (if enabled)
-    if self.ml_enabled:
+    # Step 1: Always run rules-based first (fast)
+    if verbose:
+        self._log("[ADAPTIVE:RULES] Running rules-based comparison")
+
+    rules_result = self.rules_compare(stored, current)
+
+    if verbose:
+        self._log(f"[ADAPTIVE:RULES:RESULT] Similarity: {rules_result.similarity:.3f}")
+
+    # Step 2: Check escalation triggers
+    if verbose:
+        self._log("[ADAPTIVE:ANALYZE] Checking escalation triggers")
+
+    triggers = self._check_triggers(stored, current, rules_result)
+
+    if not triggers:
+        # No triggers - return rules result
         if verbose:
-            self._log("[COMPARE:ML] Computing ML-based similarity...")
+            self._log("[ADAPTIVE:RESULT] No triggers, using rules result")
+            self._log(f"  - Mode used: RULES")
+            self._log(f"  - Total time: ~15ms")
+        return rules_result
 
-        # Get embeddings
-        stored_embedding = await self.get_or_create_embedding(stored)
-        current_embedding = await self.get_or_create_embedding(current)
-
-        ml_similarity = self.ml_detector.compute_similarity(
-            stored_embedding, current_embedding
-        )
-        if verbose:
-            self._log(f"[COMPARE:ML] Similarity: {ml_similarity:.3f}")
-    else:
-        ml_similarity = rules_similarity
-
-    # 3. Combine scores
-    combined = (rules_similarity * 0.4) + (ml_similarity * 0.6)
+    # Step 3: Triggers detected - escalate to ML
     if verbose:
-        self._log(f"[COMPARE:COMBINE] Combined: {combined:.3f} "
-                  f"(rules=0.4, ml=0.6)")
+        self._log(f"[ADAPTIVE:TRIGGER] Escalation triggered")
+        for trigger in triggers:
+            self._log(f"  - {trigger.name}: {trigger.reason}")
+        self._log("[ADAPTIVE:ESCALATE] Running ML comparison")
 
-    # 4. Classify change
-    classification = self._classify_change(combined)
-    breaking = combined < 0.70
+    ml_result = await self.ml_compare(stored, current)
 
     if verbose:
-        self._log(f"[COMPARE:RESULT] {classification}, breaking={breaking}")
+        self._log(f"[ADAPTIVE:ML:RESULT] Similarity: {ml_result.similarity:.3f}")
+        self._log("[ADAPTIVE:RESULT] Using ML result")
+        self._log(f"  - Mode used: ML (escalated)")
+        self._log(f"  - Total time: ~200ms")
+        self._log(f"  - Escalation reason: {triggers[0].name}")
 
-    return ChangeAnalysis(
-        rules_similarity=rules_similarity,
-        ml_similarity=ml_similarity,
-        combined_similarity=combined,
-        classification=classification,
-        breaking=breaking
-    )
+    # Return ML result (not combined with rules)
+    return ml_result
+
+
+def _check_triggers(
+    self,
+    stored: PageStructure,
+    current: PageStructure,
+    rules_result: ChangeAnalysis
+) -> list[EscalationTrigger]:
+    """
+    Check if any escalation triggers are met.
+
+    Verbose Logging:
+    - [ADAPTIVE:CHECK:CLASSES] Checking class volatility
+    - [ADAPTIVE:CHECK:UNCERTAINTY] Checking rules uncertainty
+    - [ADAPTIVE:CHECK:VOLATILE] Checking known volatile sites
+    - [ADAPTIVE:CHECK:RENAMES] Checking for rename patterns
+    """
+    triggers = []
+
+    # Trigger 1: Class volatility
+    class_change_ratio = self._compute_class_change_ratio(stored, current)
+    if class_change_ratio > self.config.class_change_threshold:
+        triggers.append(EscalationTrigger(
+            name="CLASS_VOLATILITY",
+            reason=f"{class_change_ratio:.0%} of classes changed (threshold: {self.config.class_change_threshold:.0%})"
+        ))
+
+    # Trigger 2: Rules uncertainty
+    if rules_result.similarity < self.config.rules_uncertainty_threshold:
+        triggers.append(EscalationTrigger(
+            name="RULES_UNCERTAINTY",
+            reason=f"Rules similarity {rules_result.similarity:.2f} below threshold {self.config.rules_uncertainty_threshold}"
+        ))
+
+    # Trigger 3: Known volatile site
+    if self._is_known_volatile(stored.domain):
+        triggers.append(EscalationTrigger(
+            name="KNOWN_VOLATILE",
+            reason=f"Domain {stored.domain} flagged as volatile based on history"
+        ))
+
+    # Trigger 4: Explicit rename pattern detected
+    rename_pattern = self._detect_rename_pattern(stored, current)
+    if rename_pattern:
+        triggers.append(EscalationTrigger(
+            name="RENAME_PATTERN",
+            reason=f"Detected rename pattern: {rename_pattern}"
+        ))
+
+    return triggers
 ```
+
+**Verbose Output (No Escalation):**
+```
+[ADAPTIVE:START] Starting adaptive comparison
+  - Domain: stable-site.com
+  - Page type: article
+
+[ADAPTIVE:RULES] Running rules-based comparison
+[COMPARE:RULES] Computing similarity...
+  - Tag similarity: 0.95
+  - Class similarity: 0.92
+  - Landmark similarity: 0.98
+[ADAPTIVE:RULES:RESULT] Similarity: 0.94
+
+[ADAPTIVE:ANALYZE] Checking escalation triggers
+[ADAPTIVE:CHECK:CLASSES] Class change ratio: 8% (threshold: 15%) - NO TRIGGER
+[ADAPTIVE:CHECK:UNCERTAINTY] Similarity 0.94 >= 0.80 - NO TRIGGER
+[ADAPTIVE:CHECK:VOLATILE] Domain not in volatile list - NO TRIGGER
+[ADAPTIVE:CHECK:RENAMES] No rename patterns detected - NO TRIGGER
+
+[ADAPTIVE:RESULT] No triggers, using rules result
+  - Mode used: RULES
+  - Similarity: 0.94
+  - Classification: MINOR
+  - Total time: 18ms
+```
+
+**Verbose Output (With Escalation):**
+```
+[ADAPTIVE:START] Starting adaptive comparison
+  - Domain: frequently-refactored.com
+  - Page type: article
+
+[ADAPTIVE:RULES] Running rules-based comparison
+[COMPARE:RULES] Computing similarity...
+  - Tag similarity: 0.91
+  - Class similarity: 0.52 (significant changes!)
+  - Landmark similarity: 0.95
+[ADAPTIVE:RULES:RESULT] Similarity: 0.72
+
+[ADAPTIVE:ANALYZE] Checking escalation triggers
+[ADAPTIVE:CHECK:CLASSES] Class change ratio: 38% (threshold: 15%) - TRIGGERED
+[ADAPTIVE:CHECK:UNCERTAINTY] Similarity 0.72 < 0.80 - TRIGGERED
+[ADAPTIVE:CHECK:RENAMES] Pattern detected: "post-*" prefix removed - TRIGGERED
+
+[ADAPTIVE:TRIGGER] Escalation triggered
+  - CLASS_VOLATILITY: 38% of classes changed (threshold: 15%)
+  - RULES_UNCERTAINTY: Rules similarity 0.72 below threshold 0.80
+  - RENAME_PATTERN: Detected rename pattern: post-* prefix removal
+
+[ADAPTIVE:ESCALATE] Running ML comparison
+[COMPARE:ML:DESCRIBE] Generating descriptions...
+[COMPARE:ML:EMBED] Computing embeddings...
+[COMPARE:ML:SIMILARITY] Cosine similarity: 0.89
+[ADAPTIVE:ML:RESULT] Similarity: 0.89
+
+[ADAPTIVE:RESULT] Using ML result
+  - Mode used: ML (escalated)
+  - Similarity: 0.89
+  - Classification: MINOR
+  - Total time: 215ms
+  - Escalation reason: CLASS_VOLATILITY
+
+[ADAPTIVE:INSIGHT] ML detected semantic similarity despite class renames
+  - Rules saw: 0.72 (MODERATE, potentially breaking)
+  - ML saw: 0.89 (MINOR, safe to continue)
+  - Action: Adapt selectors, no re-learning needed
+```
+
+---
+
+### Mode Comparison Summary
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        DECISION GUIDE                                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  "I need maximum speed"                                              │
+│      └─→ Use RULES mode                                             │
+│                                                                      │
+│  "Site frequently renames CSS classes"                               │
+│      └─→ Use ML mode                                                │
+│                                                                      │
+│  "I'm crawling many different sites"                                 │
+│      └─→ Use ADAPTIVE mode (recommended)                            │
+│                                                                      │
+│  "I don't know the site characteristics"                             │
+│      └─→ Use ADAPTIVE mode                                          │
+│                                                                      │
+│  "I need deterministic results for testing"                          │
+│      └─→ Use RULES mode                                             │
+│                                                                      │
+│  "I want rich change descriptions"                                   │
+│      └─→ Use ML mode with Ollama Cloud                              │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Important: Modes are Independent
+
+The three modes are **mutually exclusive** - you choose one:
+
+- **No weighted combination**: We do not combine rules and ML scores
+- **No parallel execution**: Adaptive runs rules first, then ML only if triggered
+- **Single result**: Each comparison returns one similarity score from one mode
+- **Clear provenance**: Result always indicates which mode produced it
+
+This design ensures:
+1. Predictable performance (you know latency based on mode)
+2. Clear debugging (one method to investigate, not two)
+3. Appropriate tool for the job (fast when possible, accurate when needed)
 
 ---
 
