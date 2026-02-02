@@ -9,6 +9,7 @@ Complete specification for the Redis storage layer module.
 The storage module provides:
 - Structure storage with versioning
 - Embedding persistence
+- Review queue for manual change approval
 - Caching utilities
 - Volatile domain tracking
 
@@ -21,6 +22,7 @@ fingerprint/storage/
 ├── __init__.py
 ├── structure_store.py    # Structure storage
 ├── embedding_store.py    # Embedding storage
+├── review_store.py       # Review queue storage
 └── cache.py              # Caching utilities
 ```
 
@@ -35,11 +37,13 @@ Storage module - Redis persistence layer.
 
 from fingerprint.storage.structure_store import StructureStore
 from fingerprint.storage.embedding_store import EmbeddingStore
+from fingerprint.storage.review_store import ReviewStore
 from fingerprint.storage.cache import Cache
 
 __all__ = [
     "StructureStore",
     "EmbeddingStore",
+    "ReviewStore",
     "Cache",
 ]
 ```
@@ -638,6 +642,515 @@ class EmbeddingStore:
 
 ---
 
+## fingerprint/storage/review_store.py
+
+```python
+"""
+Redis storage for review queue items.
+
+Key patterns:
+- {prefix}:review:pending - Sorted set of pending review item IDs (by timestamp)
+- {prefix}:review:item:{id} - Individual review item data
+- {prefix}:review:domain:{domain} - Set of review IDs for a domain
+- {prefix}:review:completed:{id} - Archived completed reviews
+
+Verbose logging pattern:
+[REVIEW_STORE:OPERATION] Message
+"""
+
+import json
+import uuid
+from datetime import datetime
+from dataclasses import asdict
+from typing import Literal
+
+import redis.asyncio as redis
+
+from fingerprint.config import RedisConfig
+from fingerprint.core.verbose import get_logger
+from fingerprint.exceptions import RedisConnectionError, SerializationError
+from fingerprint.models import (
+    ReviewItem,
+    ReviewStatus,
+    ChangeClassification,
+    ChangeAnalysis,
+)
+
+
+class ReviewStore:
+    """
+    Redis storage for change review queue.
+
+    Manages a queue of structure changes requiring manual review.
+    Uses sorted sets for efficient retrieval by timestamp.
+
+    Usage:
+        store = ReviewStore(config.redis)
+        await store.add(review_item)
+        pending = await store.get_pending(limit=50)
+        await store.approve(item_id, reviewer="admin")
+    """
+
+    def __init__(self, config: RedisConfig):
+        self.config = config
+        self.logger = get_logger()
+        self._client: redis.Redis | None = None
+
+        self.logger.info(
+            "REVIEW_STORE", "INIT",
+            "Review store initialized",
+            prefix=config.key_prefix,
+        )
+
+    async def _get_client(self) -> redis.Redis:
+        """Get or create Redis client."""
+        if self._client is None:
+            try:
+                self._client = redis.from_url(self.config.url)
+                await self._client.ping()
+            except Exception as e:
+                raise RedisConnectionError(f"Failed to connect to Redis: {e}")
+
+        return self._client
+
+    def _pending_key(self) -> str:
+        """Key for sorted set of pending items."""
+        return f"{self.config.key_prefix}:review:pending"
+
+    def _item_key(self, item_id: str) -> str:
+        """Key for individual review item."""
+        return f"{self.config.key_prefix}:review:item:{item_id}"
+
+    def _domain_key(self, domain: str) -> str:
+        """Key for domain's review items."""
+        return f"{self.config.key_prefix}:review:domain:{domain}"
+
+    def _completed_key(self, item_id: str) -> str:
+        """Key for completed/archived review."""
+        return f"{self.config.key_prefix}:review:completed:{item_id}"
+
+    async def add(self, item: ReviewItem) -> str:
+        """
+        Add item to review queue.
+
+        Args:
+            item: ReviewItem to queue
+
+        Returns:
+            Item ID
+
+        Verbose output:
+            [REVIEW_STORE:ADD] Adding review item
+              - domain: example.com
+              - page_type: article
+              - classification: breaking
+        """
+        client = await self._get_client()
+
+        # Generate ID if not set
+        if not item.id:
+            item.id = str(uuid.uuid4())
+
+        self.logger.info(
+            "REVIEW_STORE", "ADD",
+            f"Adding review for {item.domain}/{item.page_type}",
+            id=item.id,
+            classification=item.classification.value,
+        )
+
+        # Serialize item
+        data = self._serialize(item)
+        timestamp = item.created_at.timestamp()
+
+        # Use pipeline for atomic operations
+        async with client.pipeline() as pipe:
+            # Store item data
+            pipe.setex(
+                self._item_key(item.id),
+                self.config.ttl_seconds,
+                data,
+            )
+
+            # Add to pending sorted set (score = timestamp)
+            pipe.zadd(self._pending_key(), {item.id: timestamp})
+
+            # Add to domain index
+            pipe.sadd(self._domain_key(item.domain), item.id)
+
+            await pipe.execute()
+
+        self.logger.debug(
+            "REVIEW_STORE", "ADDED",
+            f"Review item queued: {item.id}",
+        )
+
+        return item.id
+
+    async def get(self, item_id: str) -> ReviewItem | None:
+        """
+        Get review item by ID.
+
+        Returns:
+            ReviewItem or None if not found
+        """
+        client = await self._get_client()
+        key = self._item_key(item_id)
+
+        data = await client.get(key)
+
+        if data is None:
+            # Check completed archive
+            completed_key = self._completed_key(item_id)
+            data = await client.get(completed_key)
+
+            if data is None:
+                self.logger.debug(
+                    "REVIEW_STORE", "NOT_FOUND",
+                    f"Review item not found: {item_id}",
+                )
+                return None
+
+        try:
+            return self._deserialize(data)
+        except Exception as e:
+            self.logger.error("REVIEW_STORE", "DESERIALIZE_ERROR", str(e))
+            raise SerializationError(f"Failed to deserialize review item: {e}")
+
+    async def get_pending(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        domain: str | None = None,
+    ) -> list[ReviewItem]:
+        """
+        Get pending review items.
+
+        Args:
+            limit: Maximum items to return
+            offset: Skip first N items
+            domain: Filter by domain (optional)
+
+        Returns:
+            List of pending ReviewItems (oldest first)
+
+        Verbose output:
+            [REVIEW_STORE:PENDING] Retrieving pending reviews
+              - count: 15
+              - domain: example.com (if filtered)
+        """
+        client = await self._get_client()
+
+        self.logger.debug(
+            "REVIEW_STORE", "PENDING",
+            "Retrieving pending reviews",
+            limit=limit,
+            domain=domain,
+        )
+
+        if domain:
+            # Get IDs for specific domain
+            domain_ids = await client.smembers(self._domain_key(domain))
+            pending_ids = await client.zrange(
+                self._pending_key(),
+                0, -1,  # Get all to filter
+            )
+
+            # Intersect domain and pending
+            item_ids = [
+                id for id in pending_ids
+                if id in domain_ids or id.decode() in [d.decode() if isinstance(d, bytes) else d for d in domain_ids]
+            ]
+            item_ids = item_ids[offset:offset + limit]
+        else:
+            # Get from sorted set (oldest first)
+            item_ids = await client.zrange(
+                self._pending_key(),
+                offset,
+                offset + limit - 1,
+            )
+
+        # Fetch items
+        items = []
+        for item_id in item_ids:
+            if isinstance(item_id, bytes):
+                item_id = item_id.decode()
+
+            item = await self.get(item_id)
+            if item and item.status == ReviewStatus.PENDING:
+                items.append(item)
+
+        self.logger.info(
+            "REVIEW_STORE", "PENDING_RESULT",
+            f"Found {len(items)} pending reviews",
+        )
+
+        return items
+
+    async def approve(
+        self,
+        item_id: str,
+        reviewer: str,
+        notes: str = "",
+    ) -> ReviewItem | None:
+        """
+        Approve a review item.
+
+        Args:
+            item_id: Review item ID
+            reviewer: Who approved
+            notes: Optional notes
+
+        Returns:
+            Updated ReviewItem or None if not found
+
+        Verbose output:
+            [REVIEW_STORE:APPROVE] Approved review
+              - id: abc123
+              - reviewer: admin
+        """
+        item = await self.get(item_id)
+        if item is None:
+            return None
+
+        self.logger.info(
+            "REVIEW_STORE", "APPROVE",
+            f"Approving review: {item_id}",
+            reviewer=reviewer,
+        )
+
+        # Update item
+        item.status = ReviewStatus.APPROVED
+        item.reviewed_by = reviewer
+        item.reviewed_at = datetime.utcnow()
+        item.review_notes = notes
+
+        # Move to completed
+        await self._complete(item)
+
+        return item
+
+    async def reject(
+        self,
+        item_id: str,
+        reviewer: str,
+        notes: str = "",
+    ) -> ReviewItem | None:
+        """
+        Reject a review item.
+
+        Args:
+            item_id: Review item ID
+            reviewer: Who rejected
+            notes: Reason for rejection
+
+        Returns:
+            Updated ReviewItem or None if not found
+        """
+        item = await self.get(item_id)
+        if item is None:
+            return None
+
+        self.logger.info(
+            "REVIEW_STORE", "REJECT",
+            f"Rejecting review: {item_id}",
+            reviewer=reviewer,
+            notes=notes,
+        )
+
+        # Update item
+        item.status = ReviewStatus.REJECTED
+        item.reviewed_by = reviewer
+        item.reviewed_at = datetime.utcnow()
+        item.review_notes = notes
+
+        # Move to completed
+        await self._complete(item)
+
+        return item
+
+    async def skip(
+        self,
+        item_id: str,
+        reviewer: str,
+        notes: str = "",
+    ) -> ReviewItem | None:
+        """
+        Skip a review item (defer for later).
+
+        Returns:
+            Updated ReviewItem or None if not found
+        """
+        item = await self.get(item_id)
+        if item is None:
+            return None
+
+        self.logger.info(
+            "REVIEW_STORE", "SKIP",
+            f"Skipping review: {item_id}",
+            reviewer=reviewer,
+        )
+
+        # Update item
+        item.status = ReviewStatus.SKIPPED
+        item.reviewed_by = reviewer
+        item.reviewed_at = datetime.utcnow()
+        item.review_notes = notes
+
+        # Move to completed
+        await self._complete(item)
+
+        return item
+
+    async def _complete(self, item: ReviewItem) -> None:
+        """Move item from pending to completed."""
+        client = await self._get_client()
+
+        data = self._serialize(item)
+
+        async with client.pipeline() as pipe:
+            # Remove from pending set
+            pipe.zrem(self._pending_key(), item.id)
+
+            # Remove from domain index
+            pipe.srem(self._domain_key(item.domain), item.id)
+
+            # Delete pending item
+            pipe.delete(self._item_key(item.id))
+
+            # Store in completed archive
+            pipe.setex(
+                self._completed_key(item.id),
+                self.config.ttl_seconds,
+                data,
+            )
+
+            await pipe.execute()
+
+        self.logger.debug(
+            "REVIEW_STORE", "COMPLETED",
+            f"Moved to completed: {item.id}",
+            status=item.status.value,
+        )
+
+    async def get_by_domain(self, domain: str) -> list[ReviewItem]:
+        """Get all review items for a domain."""
+        client = await self._get_client()
+
+        item_ids = await client.smembers(self._domain_key(domain))
+
+        items = []
+        for item_id in item_ids:
+            if isinstance(item_id, bytes):
+                item_id = item_id.decode()
+            item = await self.get(item_id)
+            if item:
+                items.append(item)
+
+        return items
+
+    async def count_pending(self, domain: str | None = None) -> int:
+        """Get count of pending review items."""
+        client = await self._get_client()
+
+        if domain:
+            pending_ids = await client.zrange(self._pending_key(), 0, -1)
+            domain_ids = await client.smembers(self._domain_key(domain))
+
+            # Count intersection
+            pending_set = set(
+                id.decode() if isinstance(id, bytes) else id
+                for id in pending_ids
+            )
+            domain_set = set(
+                id.decode() if isinstance(id, bytes) else id
+                for id in domain_ids
+            )
+            return len(pending_set & domain_set)
+        else:
+            return await client.zcard(self._pending_key())
+
+    async def stats(self) -> dict:
+        """
+        Get review queue statistics.
+
+        Returns:
+            Dict with pending_count, domains, oldest_item_age
+        """
+        client = await self._get_client()
+
+        pending_count = await client.zcard(self._pending_key())
+
+        # Get oldest item timestamp
+        oldest = await client.zrange(
+            self._pending_key(),
+            0, 0,
+            withscores=True,
+        )
+
+        oldest_age_hours = None
+        if oldest:
+            oldest_timestamp = oldest[0][1]
+            age_seconds = datetime.utcnow().timestamp() - oldest_timestamp
+            oldest_age_hours = age_seconds / 3600
+
+        return {
+            "pending_count": pending_count,
+            "oldest_age_hours": oldest_age_hours,
+        }
+
+    def _serialize(self, item: ReviewItem) -> str:
+        """Serialize review item to JSON."""
+        data = {
+            "id": item.id,
+            "domain": item.domain,
+            "page_type": item.page_type,
+            "url": item.url,
+            "old_version": item.old_version,
+            "new_version": item.new_version,
+            "classification": item.classification.value,
+            "similarity": item.similarity,
+            "changes_summary": item.changes_summary,
+            "status": item.status.value,
+            "created_at": item.created_at.isoformat(),
+            "reviewed_by": item.reviewed_by,
+            "reviewed_at": item.reviewed_at.isoformat() if item.reviewed_at else None,
+            "review_notes": item.review_notes,
+        }
+        return json.dumps(data)
+
+    def _deserialize(self, data: bytes | str) -> ReviewItem:
+        """Deserialize JSON to review item."""
+        if isinstance(data, bytes):
+            data = data.decode("utf-8")
+
+        obj = json.loads(data)
+
+        return ReviewItem(
+            id=obj["id"],
+            domain=obj["domain"],
+            page_type=obj["page_type"],
+            url=obj["url"],
+            old_version=obj["old_version"],
+            new_version=obj["new_version"],
+            classification=ChangeClassification(obj["classification"]),
+            similarity=obj["similarity"],
+            changes_summary=obj["changes_summary"],
+            status=ReviewStatus(obj["status"]),
+            created_at=datetime.fromisoformat(obj["created_at"]),
+            reviewed_by=obj.get("reviewed_by"),
+            reviewed_at=datetime.fromisoformat(obj["reviewed_at"]) if obj.get("reviewed_at") else None,
+            review_notes=obj.get("review_notes", ""),
+        )
+
+    async def close(self) -> None:
+        """Close Redis connection."""
+        if self._client:
+            await self._client.close()
+            self._client = None
+```
+
+---
+
 ## fingerprint/storage/cache.py
 
 ```python
@@ -847,6 +1360,23 @@ Example:
 fingerprint:volatile:frequently-changing-site.com
 ```
 
+### Review Queue
+
+```
+{prefix}:review:pending                    # Sorted set (ID → timestamp)
+{prefix}:review:item:{id}                  # Individual review item
+{prefix}:review:domain:{domain}            # Set of review IDs per domain
+{prefix}:review:completed:{id}             # Archived completed reviews
+```
+
+Example:
+```
+fingerprint:review:pending
+fingerprint:review:item:550e8400-e29b-41d4-a716-446655440000
+fingerprint:review:domain:example.com
+fingerprint:review:completed:550e8400-e29b-41d4-a716-446655440000
+```
+
 ---
 
 ## Data Format
@@ -909,6 +1439,27 @@ fingerprint:volatile:frequently-changing-site.com
 }
 ```
 
+### Review Item JSON
+
+```json
+{
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "domain": "example.com",
+    "page_type": "article",
+    "url": "https://example.com/blog/post",
+    "old_version": 3,
+    "new_version": 4,
+    "classification": "breaking",
+    "similarity": 0.65,
+    "changes_summary": "Major restructuring: main content container renamed, navigation moved",
+    "status": "pending",
+    "created_at": "2024-01-15T10:30:00Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_notes": ""
+}
+```
+
 ---
 
 ## Verbose Logging
@@ -930,6 +1481,13 @@ All storage operations use consistent logging:
 | STORE:VOLATILE | Domain marked volatile |
 | EMBED_STORE:SAVE | Saving embedding |
 | EMBED_STORE:GET | Retrieving embedding |
+| REVIEW_STORE:INIT | Review store initialized |
+| REVIEW_STORE:ADD | Adding review item |
+| REVIEW_STORE:PENDING | Retrieving pending reviews |
+| REVIEW_STORE:APPROVE | Approved review |
+| REVIEW_STORE:REJECT | Rejected review |
+| REVIEW_STORE:SKIP | Skipped review |
+| REVIEW_STORE:COMPLETED | Moved to completed |
 | CACHE:SET | Cache entry set |
 | CACHE:HIT | Cache hit |
 | CACHE:MISS | Cache miss |
@@ -960,4 +1518,20 @@ All storage operations use consistent logging:
 [2024-01-15T10:30:02Z] [STORE:FOUND] Structure found for example.com/article
   - version: 4
   - captured_at: 2024-01-15T10:30:01Z
+
+[2024-01-15T10:30:03Z] [REVIEW_STORE:ADD] Adding review for example.com/article
+  - id: 550e8400-e29b-41d4-a716-446655440000
+  - classification: breaking
+
+[2024-01-15T10:35:00Z] [REVIEW_STORE:PENDING] Retrieving pending reviews
+  - limit: 50
+  - domain: null
+
+[2024-01-15T10:35:00Z] [REVIEW_STORE:PENDING_RESULT] Found 3 pending reviews
+
+[2024-01-15T10:36:00Z] [REVIEW_STORE:APPROVE] Approving review: 550e8400-e29b-41d4-a716-446655440000
+  - reviewer: admin
+
+[2024-01-15T10:36:00Z] [REVIEW_STORE:COMPLETED] Moved to completed: 550e8400-e29b-41d4-a716-446655440000
+  - status: approved
 ```

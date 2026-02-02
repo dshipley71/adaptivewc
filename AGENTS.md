@@ -65,6 +65,18 @@ adaptive-fingerprint/
 │   │   ├── gdpr_handler.py         # GDPR compliance
 │   │   └── ccpa_handler.py         # CCPA compliance
 │   │
+│   ├── extraction/                 # Content extraction
+│   │   ├── __init__.py
+│   │   ├── extractor.py            # Content extraction engine
+│   │   ├── file_writer.py          # Save content to files
+│   │   └── formats.py              # Output format handlers (JSON, CSV, etc.)
+│   │
+│   ├── alerting/                   # Change alerts and review
+│   │   ├── __init__.py
+│   │   ├── change_monitor.py       # Monitor for breaking changes
+│   │   ├── review_queue.py         # Manual review queue
+│   │   └── notifiers.py            # Alert notifications (log, webhook, email)
+│   │
 │   └── utils/                      # Utilities
 │       ├── __init__.py
 │       ├── url_utils.py            # URL normalization
@@ -258,6 +270,44 @@ legal:
     enabled: true
     respect_opt_out: true     # Respect "do not sell" signals
     respect_gpc: true         # Respect Global Privacy Control header
+
+# Content extraction
+extraction:
+  enabled: true
+  output_dir: "./extracted"           # Directory for extracted content
+  formats: ["json", "csv"]            # Output formats
+  include_metadata: true              # Include extraction metadata
+  include_html: false                 # Include raw HTML in output
+  max_content_length: 1000000         # Max content size (bytes)
+
+# Change alerting and review
+alerting:
+  enabled: true
+
+  # Alert thresholds
+  alert_on_breaking: true             # Alert on breaking changes
+  alert_on_moderate: false            # Alert on moderate changes
+  alert_threshold: 0.70               # Similarity below this triggers alert
+
+  # Review queue
+  review_queue:
+    enabled: true
+    auto_approve_cosmetic: true       # Auto-approve cosmetic changes
+    auto_approve_minor: false         # Auto-approve minor changes
+    require_review_breaking: true     # Require manual review for breaking
+    max_queue_size: 1000              # Max pending reviews
+
+  # Notifications
+  notifications:
+    log: true                         # Log alerts
+    webhook:
+      enabled: false
+      url: ""                         # Webhook URL for alerts
+    email:
+      enabled: false
+      smtp_host: ""
+      smtp_port: 587
+      recipients: []
 
 # Verbose logging
 verbose:
@@ -508,6 +558,110 @@ class ExtractionStrategy:
     learned_at: datetime = field(default_factory=datetime.utcnow)
     learning_source: str = "initial"  # "initial", "adaptation", "manual"
     confidence_scores: dict[str, float] = field(default_factory=dict)
+
+
+# ============== EXTRACTION MODELS ==============
+
+@dataclass
+class ExtractedContent:
+    """Extracted content from a page."""
+    url: str
+    domain: str
+    page_type: str
+
+    # Extracted fields
+    title: str = ""
+    content: str = ""
+    metadata: dict[str, str] = field(default_factory=dict)
+
+    # Raw data
+    html: str = ""
+
+    # Extraction info
+    extracted_at: datetime = field(default_factory=datetime.utcnow)
+    strategy_version: int = 1
+    extraction_confidence: float = 0.0
+
+    # File output
+    output_file: str | None = None
+
+
+@dataclass
+class ExtractionResult:
+    """Result of content extraction operation."""
+    success: bool
+    content: ExtractedContent | None = None
+    error: str = ""
+
+    # Statistics
+    fields_extracted: int = 0
+    content_length: int = 0
+    duration_ms: float = 0.0
+
+
+# ============== ALERTING MODELS ==============
+
+class ReviewStatus(Enum):
+    """Status of a review item."""
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    AUTO_APPROVED = "auto_approved"
+
+
+class AlertSeverity(Enum):
+    """Severity of change alert."""
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
+@dataclass
+class ChangeAlert:
+    """Alert for detected structure change."""
+    id: str
+    domain: str
+    page_type: str
+    url: str
+
+    # Change details
+    change_analysis: ChangeAnalysis
+    severity: AlertSeverity
+
+    # Timestamps
+    detected_at: datetime = field(default_factory=datetime.utcnow)
+    acknowledged_at: datetime | None = None
+
+    # Status
+    acknowledged: bool = False
+    acknowledged_by: str = ""
+
+
+@dataclass
+class ReviewItem:
+    """Item in the manual review queue."""
+    id: str
+    domain: str
+    page_type: str
+
+    # Structures to compare
+    old_structure_version: int
+    new_structure_version: int
+
+    # Change analysis
+    change_analysis: ChangeAnalysis
+
+    # Review status
+    status: ReviewStatus = ReviewStatus.PENDING
+    reviewer: str = ""
+    review_notes: str = ""
+
+    # Timestamps
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    reviewed_at: datetime | None = None
+
+    # Actions
+    auto_adapt: bool = False  # Whether to auto-adapt on approval
 ```
 
 ---
@@ -1455,6 +1609,11 @@ All modules use consistent verbose logging:
 | ToS | `TOS` | CHECK, META, NOINDEX, NOFOLLOW |
 | GDPR | `GDPR` | SCAN, PII_FOUND, REDACT, PSEUDONYMIZE |
 | CCPA | `CCPA` | CHECK, OPT_OUT, GPC |
+| Extract | `EXTRACT` | INIT, START, CONTENT, FIELD, SAVE, COMPLETE |
+| FileWriter | `FILEWRITER` | INIT, WRITE, FORMAT, PATH, COMPLETE |
+| Alert | `ALERT` | INIT, DETECT, CREATE, SEND, ACKNOWLEDGE |
+| Review | `REVIEW` | QUEUE, ADD, APPROVE, REJECT, AUTO_APPROVE |
+| Notify | `NOTIFY` | INIT, LOG, WEBHOOK, EMAIL, SEND |
 
 ---
 
@@ -1468,6 +1627,8 @@ The following AGENTS.md files contain detailed implementation specifications for
 - `fingerprint/storage/AGENTS.md` - Redis storage layer
 - `fingerprint/compliance/AGENTS.md` - robots.txt, rate limiting, anti-bot detection
 - `fingerprint/legal/AGENTS.md` - CFAA, ToS, GDPR, CCPA compliance
+- `fingerprint/extraction/AGENTS.md` - Content extraction and file saving
+- `fingerprint/alerting/AGENTS.md` - Change alerts and manual review queue
 
 ---
 
