@@ -1,252 +1,917 @@
 # AGENTS.md - Adaptive Extraction Subsystem
 
-This module handles dynamic website structure learning, change detection, and extraction strategy adaptation.
+This module handles dynamic website structure learning, change detection, and extraction strategy adaptation using dual fingerprinting (rules-based + ML-based).
 
 ## Overview
 
-Websites evolve constantly: iframes move, CSS classes change, JavaScript rewrites DOM structures, and URL patterns shift. This subsystem enables the crawler to detect these changes, adapt extraction strategies automatically, and maintain a persistent memory of site structures in Redis.
+Websites evolve constantly: CSS classes change, JavaScript rewrites DOM structures, iframes relocate, and URL patterns shift. This subsystem enables the crawler to:
+
+1. **Detect changes** using dual fingerprinting (rules-based DOM analysis + ML embeddings)
+2. **Classify impact** (cosmetic, minor, moderate, breaking)
+3. **Adapt extraction strategies** automatically when possible
+4. **Log reasons** for all adaptations with verbose output
+5. **Persist to Redis** for future crawls
 
 ## Core Principles
 
 1. **Learn Once, Extract Many**: Capture site structure on first visit, reuse until changes detected
-2. **Graceful Degradation**: When structure changes, attempt adaptation before failing
-3. **Explainable Changes**: Every adaptation includes a documented reason
-4. **Compliance Preserved**: Adaptive behavior never bypasses rate limits or robots.txt
+2. **Dual Fingerprinting**: Combine rules-based and ML-based analysis for robust detection
+3. **Graceful Degradation**: Attempt adaptation before failing
+4. **Explainable Changes**: Every adaptation includes documented reasons
+5. **Compliance Preserved**: Adaptive behavior never bypasses rate limits or robots.txt
+6. **Verbose Logging**: Every operation logged with detailed context
 
 ## Architecture
 
 ```
 adaptive/
-├── structure_analyzer.py    # DOM fingerprinting and structure capture
+├── structure_analyzer.py    # Rules-based DOM fingerprinting
 ├── change_detector.py       # Diff engine for structure comparison
-├── extraction_strategy.py   # Rule-based extraction engine
-├── strategy_learner.py      # Infers selectors from page structure
-├── change_logger.py         # Documents why changes occurred
-├── js_detector.py           # Detects when JS rendering is needed
-├── url_pattern_tracker.py   # Tracks URL scheme changes
-└── models.py                # Data models for structures and strategies
+├── strategy_learner.py      # CSS selector inference and adaptation
+└── models.py                # Data models (shared with crawler/models.py)
 ```
 
-## JavaScript Rendering Detection
+---
 
-Not every page needs Playwright. The crawler intelligently detects when JS rendering is required:
+## Module Documentation
+
+### 1. Structure Analyzer (`structure_analyzer.py`)
+
+Rules-based DOM fingerprinting that creates a comprehensive structural signature of a web page.
 
 ```python
-class JSRenderingDetector:
+class StructureAnalyzer:
     """
-    Determines if a page requires JavaScript execution for content extraction.
-    
-    Detection signals (weighted scoring):
-    - Empty content containers: <div id="app"></div>, <div id="root"></div>
-    - Framework signatures: __NEXT_DATA__, window.__INITIAL_STATE__
-    - Script-heavy pages: >50% of page is <script> tags
-    - Hydration markers: data-reactroot, ng-app, v-cloak
-    - Historical: Previous visits needed JS
-    
-    Decision thresholds:
-    - Score > 0.8: Always render with JS
-    - Score 0.4-0.8: Try static first, fall back to JS
-    - Score < 0.4: Static extraction only
-    """
-    
-    FRAMEWORK_SIGNATURES = {
-        "react": ["data-reactroot", "__REACT", "react-root"],
-        "nextjs": ["__NEXT_DATA__", "_next"],
-        "vue": ["v-cloak", "__VUE__", "data-v-"],
-        "angular": ["ng-app", "ng-version", "_nghost"],
-        "svelte": ["svelte-", "__svelte"],
-    }
-    
-    def detect(self, html: str, url: str) -> JSDetectionResult:
-        """Analyze page to determine JS rendering need."""
-    
-    def score_js_likelihood(self, html: str) -> float:
-        """Return 0-1 score for JS rendering necessity."""
-    
-    def detect_framework(self, html: str) -> str | None:
-        """Identify frontend framework if present."""
+    Creates DOM fingerprints using rules-based analysis.
 
+    Responsibilities:
+    - Parse HTML and extract structural features
+    - Identify semantic landmarks (HTML5, ARIA)
+    - Detect frameworks and scripts
+    - Locate content regions
+    - Generate fingerprint hash
+
+    Verbose Logging:
+    - [STRUCTURE:ANALYZE] Starting analysis with HTML size
+    - [STRUCTURE:PARSE] HTML parsed successfully
+    - [STRUCTURE:TAGS] Tag distribution extracted
+    - [STRUCTURE:CLASSES] CSS classes catalogued
+    - [STRUCTURE:IDS] ID attributes collected
+    - [STRUCTURE:LANDMARKS] Semantic landmarks identified
+    - [STRUCTURE:IFRAMES] Iframes detected with positions
+    - [STRUCTURE:SCRIPTS] Scripts analyzed, frameworks detected
+    - [STRUCTURE:REGIONS] Content regions identified
+    - [STRUCTURE:NAVIGATION] Navigation elements found
+    - [STRUCTURE:PAGINATION] Pagination pattern detected
+    - [STRUCTURE:HASH] Fingerprint hash generated
+    - [STRUCTURE:COMPLETE] Analysis complete with summary
+    """
+```
+
+#### Fingerprint Components
+
+```python
 @dataclass
-class JSDetectionResult:
-    needs_js: bool
-    confidence: float
-    framework: str | None
-    signals: list[str]           # What triggered detection
-    recommendation: str          # "static", "js_required", "try_static_first"
-```
+class PageStructure:
+    """Complete fingerprint of a page's DOM structure."""
 
-**Integration with fetch pipeline:**
-
-```python
-async def smart_fetch(self, url: str) -> FetchResult:
-    # 1. Static fetch first (always, for JS detection)
-    static_response = await self.fetcher.get(url)
-    
-    # 2. Check if JS rendering needed
-    js_result = self.js_detector.detect(static_response.html, url)
-    
-    if js_result.recommendation == "static":
-        return static_response
-    
-    if js_result.recommendation == "try_static_first":
-        # Attempt static extraction
-        extraction = self.extract(static_response.html)
-        if extraction.is_valid():
-            return static_response
-        # Fall through to JS rendering
-    
-    # 3. JS rendering required - rate limit applies
-    await self.rate_limiter.acquire(get_domain(url))
-    return await self.fetcher.get_with_js(url)
-```
-
-## URL Pattern Tracking
-
-Sites change URL schemes. The crawler detects and adapts:
-
-```python
-class URLPatternTracker:
-    """
-    Tracks URL patterns per domain and detects scheme changes.
-    
-    Patterns tracked:
-    - Path structure: /blog/{slug} vs /articles/{year}/{slug}
-    - Query parameters: ?id=123 vs ?article=123
-    - Fragment usage: #section vs clean URLs
-    
-    Change detection:
-    - New pattern emerges (>10 URLs match)
-    - Old pattern stops appearing
-    - Redirect patterns (old → new)
-    """
-    
-    @dataclass
-    class URLPattern:
-        pattern: str                    # Regex pattern
-        example_urls: list[str]         # Sample matches
-        first_seen: datetime
-        last_seen: datetime
-        match_count: int
-        page_type: str | None           # Associated page type
-    
-    def learn_pattern(self, url: str, page_type: str) -> None:
-        """Update pattern knowledge from observed URL."""
-    
-    def detect_pattern_change(self, domain: str) -> list[PatternChange]:
-        """Identify URL scheme migrations."""
-    
-    def match_to_page_type(self, url: str) -> str | None:
-        """Predict page type from URL pattern."""
-
-@dataclass
-class PatternChange:
+    # Identification
     domain: str
-    change_type: str              # "new_pattern", "deprecated_pattern", "redirect_detected"
-    old_pattern: str | None
-    new_pattern: str | None
-    confidence: float
-    evidence: dict                # Sample URLs, redirect chains
-    reason: str                   # Human-readable explanation
+    page_type: str                          # "article", "listing", "product", etc.
+    url_pattern: str                        # Regex pattern for matching URLs
+    variant_id: str = "default"             # For structural variants
+
+    # Tag Hierarchy
+    tag_hierarchy: TagHierarchy
+    # Contains:
+    #   tag_counts: dict[str, int]          # {"div": 450, "p": 120}
+    #   depth_distribution: dict[int, int]  # {1: 5, 2: 15, 3: 45}
+    #   parent_child_pairs: dict[str, int]  # {"article>p": 8}
+
+    # CSS Analysis
+    css_class_map: dict[str, int]           # Class name -> occurrence count
+    id_attributes: set[str]                 # All id attributes found
+
+    # Semantic Structure
+    semantic_landmarks: dict[str, str]      # Landmark -> CSS selector
+    # Example: {"header": "header.site-header", "main": "main#content"}
+
+    # Iframes
+    iframe_locations: list[IframeInfo]
+
+    # Scripts
+    script_signatures: list[str]            # Framework identifiers
+    detected_framework: str | None          # "react", "vue", "angular", etc.
+
+    # Content Regions
+    content_regions: list[ContentRegion]
+    navigation_selectors: list[str]
+    pagination_pattern: PaginationInfo | None
+
+    # Metadata
+    captured_at: datetime
+    version: int
+    content_hash: str                       # Hash for quick comparison
 ```
 
-**Example pattern change:**
+#### Analysis Process
 
-```json
-{
-    "domain": "example.com",
-    "change_type": "redirect_detected",
-    "old_pattern": "^/blog/([\\w-]+)/?$",
-    "new_pattern": "^/articles/(\\d{4})/(\\d{2})/([\\w-]+)/?$",
-    "confidence": 0.92,
-    "evidence": {
-        "redirects_observed": [
-            {"/blog/hello-world": "/articles/2025/01/hello-world"},
-            {"/blog/another-post": "/articles/2024/12/another-post"}
-        ],
-        "old_pattern_404_rate": 0.85,
-        "new_pattern_success_rate": 0.98
-    },
-    "reason": "Blog migrated to date-prefixed URL scheme. 301 redirects in place from old URLs."
-}
+```python
+def analyze(self, html: str, url: str, verbose: bool = True) -> PageStructure:
+    """
+    Analyze HTML and create structural fingerprint.
+
+    Verbose Output:
+    [STRUCTURE:ANALYZE] Analyzing HTML
+      - URL: https://example.com/article/123
+      - HTML size: 45,230 bytes
+
+    [STRUCTURE:PARSE] Parsing HTML
+      - Parser: lxml
+      - Parse time: 12ms
+
+    [STRUCTURE:TAGS] Extracting tag distribution
+      - Total tags: 847
+      - Unique tags: 32
+      - Top 5: div(245), p(120), a(89), span(67), li(45)
+
+    [STRUCTURE:CLASSES] Cataloguing CSS classes
+      - Total classes: 156
+      - Unique classes: 67
+      - Semantic classes found: container, article, content, nav, header, footer
+
+    [STRUCTURE:IDS] Collecting ID attributes
+      - IDs found: 23
+      - Notable: main-content, sidebar, footer, nav-menu
+
+    [STRUCTURE:LANDMARKS] Identifying semantic landmarks
+      - HTML5 landmarks:
+        - header: header.site-header
+        - nav: nav.main-navigation
+        - main: main#content
+        - article: article.post
+        - aside: aside.sidebar
+        - footer: footer.site-footer
+      - ARIA roles:
+        - banner: header[role="banner"]
+        - navigation: nav[role="navigation"]
+        - main: main[role="main"]
+
+    [STRUCTURE:IFRAMES] Detecting iframes
+      - Found: 2 iframes
+      - iframe[0]:
+        - Selector: div.content iframe.video
+        - Src pattern: https://youtube.com/embed/*
+        - Position: content
+        - Dimensions: 560x315
+        - Dynamic: No
+      - iframe[1]:
+        - Selector: aside.sidebar iframe.ad
+        - Src pattern: https://ads.example.com/*
+        - Position: sidebar
+        - Dimensions: 300x250
+        - Dynamic: Yes
+
+    [STRUCTURE:SCRIPTS] Analyzing scripts
+      - Total scripts: 12
+      - External: 8, Inline: 4
+      - Framework detection:
+        - React: DETECTED (data-reactroot, __REACT_DEVTOOLS)
+        - Next.js: DETECTED (__NEXT_DATA__, _next)
+        - Vue: Not detected
+        - Angular: Not detected
+
+    [STRUCTURE:REGIONS] Identifying content regions
+      - Regions found: 3
+      - main_content:
+        - Primary selector: article.post
+        - Fallbacks: main#content, div.article-body
+        - Confidence: 0.92
+      - sidebar:
+        - Primary selector: aside.sidebar
+        - Fallbacks: div.sidebar, div#sidebar
+        - Confidence: 0.85
+      - comments:
+        - Primary selector: section.comments
+        - Fallbacks: div#comments
+        - Confidence: 0.78
+
+    [STRUCTURE:NAVIGATION] Finding navigation elements
+      - Navigation selectors: 5
+        - nav.main-navigation
+        - nav.footer-nav
+        - ul.breadcrumbs
+        - div.pagination
+        - aside.sidebar nav
+
+    [STRUCTURE:PAGINATION] Detecting pagination pattern
+      - Pattern detected: Yes
+      - Next selector: a.next-page
+      - Prev selector: a.prev-page
+      - Page pattern: ?page={n}
+      - Current page: 1
+
+    [STRUCTURE:HASH] Generating fingerprint hash
+      - Hash algorithm: SHA-256
+      - Hash: a1b2c3d4e5f67890
+
+    [STRUCTURE:COMPLETE] Analysis complete
+      - Domain: example.com
+      - Page type: article
+      - Version: 1
+      - Content regions: 3
+      - Landmarks: 6
+      - Total time: 45ms
+    """
 ```
+
+#### Comparison Method
+
+```python
+def compare(
+    self,
+    structure_a: PageStructure,
+    structure_b: PageStructure,
+    verbose: bool = True
+) -> float:
+    """
+    Compare two structures and return similarity score (0-1).
+
+    Uses weighted combination of:
+    - Tag intersection-over-union (weight: 0.25)
+    - CSS class Jaccard similarity (weight: 0.25)
+    - ID attribute overlap (weight: 0.15)
+    - Semantic landmark match (weight: 0.20)
+    - Content region overlap (weight: 0.15)
+
+    Verbose Output:
+    [STRUCTURE:COMPARE] Comparing structures
+      - Structure A: version 2, captured 2025-01-15
+      - Structure B: version 3, captured 2025-01-20
+
+    [STRUCTURE:COMPARE:TAGS] Tag comparison
+      - Common tags: 28
+      - Only in A: 2 (marquee, blink)
+      - Only in B: 1 (dialog)
+      - IoU similarity: 0.903
+
+    [STRUCTURE:COMPARE:CLASSES] Class comparison
+      - Common classes: 58
+      - Only in A: 5 (post-body, post-title, ...)
+      - Only in B: 5 (content, title, ...)
+      - Jaccard similarity: 0.853
+
+    [STRUCTURE:COMPARE:IDS] ID comparison
+      - Common IDs: 20
+      - Changed: 2
+      - Overlap: 0.909
+
+    [STRUCTURE:COMPARE:LANDMARKS] Landmark comparison
+      - Matched: 5/6
+      - Changed: footer (footer.site-footer -> footer#new-footer)
+      - Match rate: 0.833
+
+    [STRUCTURE:COMPARE:REGIONS] Region comparison
+      - Matched regions: 2/3
+      - Changed: sidebar moved
+      - Overlap: 0.667
+
+    [STRUCTURE:COMPARE:RESULT] Final similarity
+      - Tag weight (0.25): 0.903 * 0.25 = 0.226
+      - Class weight (0.25): 0.853 * 0.25 = 0.213
+      - ID weight (0.15): 0.909 * 0.15 = 0.136
+      - Landmark weight (0.20): 0.833 * 0.20 = 0.167
+      - Region weight (0.15): 0.667 * 0.15 = 0.100
+      - TOTAL SIMILARITY: 0.842
+    """
+```
+
+---
+
+### 2. Change Detector (`change_detector.py`)
+
+Compares structures and classifies changes.
+
+```python
+class ChangeDetector:
+    """
+    Detects and classifies structure changes.
+
+    Responsibilities:
+    - Compare two PageStructure instances
+    - Identify specific changes (added/removed/moved elements)
+    - Classify change severity
+    - Determine if changes are breaking
+
+    Classification Thresholds:
+    - COSMETIC: > 0.95 similarity
+    - MINOR: 0.85 - 0.95 similarity
+    - MODERATE: 0.70 - 0.85 similarity
+    - BREAKING: < 0.70 similarity
+
+    Verbose Logging:
+    - [CHANGE:DETECT] Starting change detection
+    - [CHANGE:HASH] Quick hash comparison
+    - [CHANGE:SIMILARITY] Computing similarity scores
+    - [CHANGE:IFRAMES] Detecting iframe changes
+    - [CHANGE:CLASSES] Detecting class renames
+    - [CHANGE:STRUCTURE] Detecting structural changes
+    - [CHANGE:SCRIPTS] Detecting script changes
+    - [CHANGE:CLASSIFY] Classifying change type
+    - [CHANGE:IMPACT] Assessing impact on extraction
+    - [CHANGE:RESULT] Final change analysis
+    """
+```
+
+#### Change Types
+
+```python
+class ChangeType(Enum):
+    """All detectable change types."""
+
+    # Iframe changes
+    IFRAME_ADDED = "iframe_added"
+    IFRAME_REMOVED = "iframe_removed"
+    IFRAME_RELOCATED = "iframe_relocated"
+    IFRAME_RESIZED = "iframe_resized"
+
+    # Tag/Class changes
+    TAG_RENAMED = "tag_renamed"
+    CLASS_RENAMED = "class_renamed"
+    ID_CHANGED = "id_changed"
+
+    # Structural changes
+    STRUCTURE_REORGANIZED = "structure_reorganized"
+    CONTENT_RELOCATED = "content_relocated"
+
+    # Script changes
+    SCRIPT_ADDED = "script_added"
+    SCRIPT_REMOVED = "script_removed"
+    SCRIPT_MODIFIED = "script_modified"
+    FRAMEWORK_CHANGED = "framework_changed"
+
+    # URL/Navigation changes
+    URL_PATTERN_CHANGED = "url_pattern_changed"
+    PAGINATION_CHANGED = "pagination_changed"
+
+    # Overall changes
+    MINOR_LAYOUT_SHIFT = "minor_layout_shift"
+    MAJOR_REDESIGN = "major_redesign"
+```
+
+#### Detection Process
+
+```python
+def detect(
+    self,
+    previous: PageStructure,
+    current: PageStructure,
+    verbose: bool = True
+) -> ChangeAnalysis:
+    """
+    Detect all changes between two structures.
+
+    Verbose Output:
+    [CHANGE:DETECT] Starting change detection
+      - Previous: v2, captured 2025-01-15T10:00:00Z
+      - Current: v3, captured 2025-01-20T14:30:00Z
+      - Domain: example.com
+      - Page type: article
+
+    [CHANGE:HASH] Quick hash comparison
+      - Previous hash: a1b2c3d4
+      - Current hash: e5f6g7h8
+      - Hashes match: NO (detailed comparison needed)
+
+    [CHANGE:SIMILARITY] Computing similarity scores
+      - Rules-based similarity: 0.78
+      - ML-based similarity: 0.82 (via embeddings)
+      - Combined similarity: 0.80 (40% rules, 60% ML)
+
+    [CHANGE:IFRAMES] Detecting iframe changes
+      - Previous iframes: 2
+      - Current iframes: 2
+      - Changes detected:
+        - IFRAME_RELOCATED: video-embed
+          - Old: aside.sidebar iframe.video
+          - New: div.content iframe.video
+          - Position: sidebar -> content
+          - Breaking: No (same class preserved)
+
+    [CHANGE:CLASSES] Detecting class renames
+      - Analyzing class frequency patterns...
+      - Potential renames detected:
+        - CLASS_RENAMED: post-body -> content
+          - Frequency match: 5 occurrences each
+          - Context similar: 0.91
+          - Confidence: 0.87
+        - CLASS_RENAMED: post-title -> title
+          - Frequency match: 1 occurrence each
+          - Context similar: 0.95
+          - Confidence: 0.92
+        - CLASS_RENAMED: post-meta -> meta
+          - Frequency match: 1 occurrence each
+          - Context similar: 0.88
+          - Confidence: 0.85
+
+    [CHANGE:STRUCTURE] Detecting structural changes
+      - Tag hierarchy similarity: 0.89
+      - Depth distribution similarity: 0.92
+      - Parent-child similarity: 0.85
+      - Changes detected:
+        - STRUCTURE_REORGANIZED: sidebar moved
+          - Old position: right of content
+          - New position: below content
+          - Impact: Minor (content order changed)
+
+    [CHANGE:SCRIPTS] Detecting script changes
+      - Previous framework: React
+      - Current framework: React
+      - Scripts added: 1 (analytics.js)
+      - Scripts removed: 0
+      - Changes detected:
+        - SCRIPT_ADDED: analytics.js
+          - Impact: None (non-essential)
+
+    [CHANGE:CLASSIFY] Classifying change type
+      - Similarity: 0.80
+      - Classification: MODERATE
+      - Threshold applied: 0.70 < 0.80 < 0.85
+
+    [CHANGE:IMPACT] Assessing impact on extraction
+      - Fields affected:
+        - title: HIGH impact (selector changed)
+        - content: HIGH impact (selector changed)
+        - metadata: MEDIUM impact (partial change)
+      - Strategy needs update: YES
+      - Can auto-adapt: YES (class renames detected)
+
+    [CHANGE:RESULT] Final change analysis
+      - Total changes: 6
+      - Change types:
+        - IFRAME_RELOCATED: 1
+        - CLASS_RENAMED: 3
+        - STRUCTURE_REORGANIZED: 1
+        - SCRIPT_ADDED: 1
+      - Classification: MODERATE
+      - Breaking: YES (extraction selectors invalid)
+      - Auto-adaptable: YES
+      - Confidence: 0.85
+    """
+```
+
+#### Change Analysis Result
+
+```python
+@dataclass
+class ChangeAnalysis:
+    """Complete analysis of changes between structures."""
+
+    # Similarity scores
+    rules_similarity: float
+    ml_similarity: float
+    combined_similarity: float
+
+    # Classification
+    classification: str  # "cosmetic", "minor", "moderate", "breaking"
+    breaking: bool
+
+    # Detailed changes
+    changes: list[StructureChange]
+
+    # Impact assessment
+    fields_affected: dict[str, str]  # field -> impact level
+    can_auto_adapt: bool
+    adaptation_confidence: float
+
+    # Reason documentation
+    reason: str  # Human-readable explanation
+```
+
+---
+
+### 3. Strategy Learner (`strategy_learner.py`)
+
+Infers and adapts CSS selectors for content extraction.
+
+```python
+class StrategyLearner:
+    """
+    Learns extraction strategies from page structure.
+
+    Responsibilities:
+    - Infer CSS selectors for content fields
+    - Generate fallback selectors
+    - Adapt selectors when structure changes
+    - Validate selector effectiveness
+
+    Learning Priority:
+    1. Semantic HTML: <article>, <main>, <h1>
+    2. ARIA landmarks: role="main", aria-label
+    3. Schema.org: itemtype, itemprop
+    4. Common patterns: .content, .article, .post
+    5. Structural heuristics: largest text block
+
+    Verbose Logging:
+    - [LEARN:START] Starting strategy learning
+    - [LEARN:SEMANTIC] Checking semantic HTML
+    - [LEARN:ARIA] Checking ARIA landmarks
+    - [LEARN:SCHEMA] Checking Schema.org markup
+    - [LEARN:PATTERNS] Checking common class patterns
+    - [LEARN:HEURISTIC] Applying structural heuristics
+    - [LEARN:CANDIDATE] Evaluating selector candidate
+    - [LEARN:SELECT] Selecting best selector
+    - [LEARN:FALLBACK] Generating fallback selectors
+    - [LEARN:VALIDATE] Validating selector
+    - [LEARN:CONFIDENCE] Computing confidence score
+    - [LEARN:COMPLETE] Strategy learning complete
+    """
+```
+
+#### Learning Process
+
+```python
+async def infer(
+    self,
+    html: str,
+    structure: PageStructure,
+    previous_strategy: ExtractionStrategy | None = None,
+    verbose: bool = True
+) -> ExtractionStrategy:
+    """
+    Infer extraction strategy for a page.
+
+    Verbose Output:
+    [LEARN:START] Starting strategy learning
+      - Domain: example.com
+      - Page type: article
+      - Previous strategy: Yes (v2)
+      - Mode: Adaptation (previous exists)
+
+    [LEARN:SEMANTIC] Checking semantic HTML elements
+      - <article> found: YES at article.post
+      - <main> found: YES at main#content
+      - <h1> found: YES at article.post h1
+      - <time> found: YES at article.post time[datetime]
+      - Semantic coverage: 4/5 common elements
+
+    [LEARN:ARIA] Checking ARIA landmarks
+      - role="main": YES at main#content
+      - role="article": NO
+      - role="banner": YES at header
+      - aria-label present: 3 elements
+
+    [LEARN:SCHEMA] Checking Schema.org markup
+      - itemtype="Article": YES
+      - itemprop="headline": YES at h1
+      - itemprop="articleBody": YES at div.content
+      - itemprop="author": YES at span.author
+      - itemprop="datePublished": YES at time
+      - Schema.org coverage: EXCELLENT
+
+    [LEARN:PATTERNS] Checking common class patterns
+      - Content patterns found:
+        - .content: 1 match (div.content)
+        - .article-body: 0 matches
+        - .post-content: 0 matches
+      - Title patterns found:
+        - .title: 1 match (h1.title)
+        - .headline: 0 matches
+
+    --- FIELD: title ---
+
+    [LEARN:CANDIDATE] Evaluating selector: article.post h1
+      - Elements matched: 1
+      - Text content: "Example Article Title"
+      - Text length: 21 chars
+      - Confidence: 0.95 (single match, semantic element)
+
+    [LEARN:CANDIDATE] Evaluating selector: [itemprop="headline"]
+      - Elements matched: 1
+      - Text content: "Example Article Title"
+      - Text length: 21 chars
+      - Confidence: 0.98 (Schema.org, explicit semantic)
+
+    [LEARN:CANDIDATE] Evaluating selector: h1.title
+      - Elements matched: 1
+      - Text content: "Example Article Title"
+      - Text length: 21 chars
+      - Confidence: 0.90 (class-based)
+
+    [LEARN:SELECT] Selected best selector for title
+      - Winner: [itemprop="headline"]
+      - Confidence: 0.98
+      - Reason: Schema.org provides explicit semantic meaning
+
+    [LEARN:FALLBACK] Generating fallback selectors for title
+      - Fallback 1: article.post h1 (confidence: 0.95)
+      - Fallback 2: h1.title (confidence: 0.90)
+      - Fallback 3: main h1 (confidence: 0.85)
+
+    --- FIELD: content ---
+
+    [LEARN:CANDIDATE] Evaluating selector: [itemprop="articleBody"]
+      - Elements matched: 1
+      - Text length: 5,230 chars
+      - Paragraph count: 12
+      - Confidence: 0.97
+
+    [LEARN:CANDIDATE] Evaluating selector: article.post div.content
+      - Elements matched: 1
+      - Text length: 5,230 chars
+      - Paragraph count: 12
+      - Confidence: 0.92
+
+    [LEARN:HEURISTIC] Applying largest text block heuristic
+      - Candidate: div.content
+      - Text length: 5,230 chars (largest)
+      - Text density: 0.78 (high)
+      - Confidence: 0.88
+
+    [LEARN:SELECT] Selected best selector for content
+      - Winner: [itemprop="articleBody"]
+      - Confidence: 0.97
+      - Reason: Schema.org with validated content
+
+    [LEARN:FALLBACK] Generating fallback selectors for content
+      - Fallback 1: article.post div.content (confidence: 0.92)
+      - Fallback 2: main .content (confidence: 0.85)
+
+    --- FIELD: author ---
+
+    [LEARN:CANDIDATE] Evaluating selector: [itemprop="author"]
+      - Elements matched: 1
+      - Text content: "John Smith"
+      - Confidence: 0.95
+
+    [LEARN:SELECT] Selected best selector for author
+      - Winner: [itemprop="author"]
+      - Confidence: 0.95
+
+    --- FIELD: date ---
+
+    [LEARN:CANDIDATE] Evaluating selector: time[datetime]
+      - Elements matched: 1
+      - Datetime value: 2025-01-20
+      - Confidence: 0.98
+
+    [LEARN:SELECT] Selected best selector for date
+      - Winner: time[datetime]
+      - Confidence: 0.98
+      - Extraction: attribute "datetime"
+
+    [LEARN:VALIDATE] Validating complete strategy
+      - All required fields present: YES
+      - Minimum confidence threshold (0.8): PASSED
+      - Selector uniqueness: PASSED
+
+    [LEARN:COMPLETE] Strategy learning complete
+      - Domain: example.com
+      - Page type: article
+      - Version: 3
+      - Fields learned: 4 (title, content, author, date)
+      - Average confidence: 0.97
+      - Total time: 125ms
+    """
+```
+
+#### Adaptation Process
+
+```python
+async def adapt(
+    self,
+    html: str,
+    structure: PageStructure,
+    old_strategy: ExtractionStrategy,
+    changes: ChangeAnalysis,
+    verbose: bool = True
+) -> ExtractionStrategy:
+    """
+    Adapt existing strategy based on detected changes.
+
+    Verbose Output:
+    [LEARN:ADAPT] Adapting strategy based on changes
+      - Domain: example.com
+      - Page type: article
+      - Old version: 2
+      - Changes: 3 class renames detected
+
+    [LEARN:ADAPT:RENAMES] Processing class renames
+      - Rename 1: post-body -> content
+        - Old selector: div.post-body
+        - New selector: div.content
+        - Verification: PASSED (1 element, same content)
+        - Confidence: 0.92
+
+      - Rename 2: post-title -> title
+        - Old selector: h1.post-title
+        - New selector: h1.title
+        - Verification: PASSED (1 element, same content)
+        - Confidence: 0.94
+
+    [LEARN:ADAPT:UPDATE] Updating selectors
+      - title:
+        - Old: h1.post-title
+        - New: h1.title
+        - Fallbacks updated: 2
+      - content:
+        - Old: div.post-body
+        - New: div.content
+        - Fallbacks updated: 2
+
+    [LEARN:ADAPT:VERIFY] Verifying adapted strategy
+      - All selectors valid: YES
+      - Extraction test: PASSED
+      - Confidence maintained: 0.93 (was 0.95)
+
+    [LEARN:ADAPT:COMPLETE] Adaptation complete
+      - Selectors updated: 2
+      - Fallbacks regenerated: 4
+      - New version: 3
+      - Adaptation confidence: 0.93
+    """
+```
+
+#### Confidence Scoring
+
+```python
+def _compute_confidence(
+    self,
+    selector: str,
+    elements: list,
+    context: dict,
+    verbose: bool = True
+) -> float:
+    """
+    Compute confidence score for a selector.
+
+    Scoring factors:
+    - Element count: 1 = base, 2-3 = *0.9, 4+ = *0.7
+    - Semantic bonus: Schema.org = +0.1, HTML5 = +0.05
+    - Specificity: Higher specificity = higher confidence
+    - Historical: Previously successful = +0.05
+
+    Verbose Output:
+    [LEARN:CONFIDENCE] Computing confidence for selector
+      - Selector: [itemprop="headline"]
+      - Elements matched: 1
+
+    [LEARN:CONFIDENCE:FACTORS]
+      - Base score: 1.0 (single element match)
+      - Element count adjustment: *1.0 (1 element)
+      - Semantic bonus: +0.10 (Schema.org itemprop)
+      - Specificity bonus: +0.02 (attribute selector)
+      - Historical bonus: +0.00 (new selector)
+
+    [LEARN:CONFIDENCE:RESULT]
+      - Raw score: 1.12
+      - Capped score: 0.98 (max 1.0)
+      - Final confidence: 0.98
+    """
+```
+
+---
+
+## Dual Fingerprinting System
+
+### Overview
+
+The adaptive module uses two complementary fingerprinting approaches:
+
+| Approach | Speed | Strengths | Weaknesses |
+|----------|-------|-----------|------------|
+| **Rules-Based** | Fast (~50ms) | Deterministic, interpretable, no dependencies | Sensitive to class renames |
+| **ML-Based** | Slower (~200ms) | Semantic understanding, robust to superficial changes | Requires embedding model |
+
+### Combined Scoring
+
+```python
+def compute_combined_similarity(
+    rules_similarity: float,
+    ml_similarity: float,
+    rules_weight: float = 0.4,
+    ml_weight: float = 0.6
+) -> float:
+    """
+    Combine rules-based and ML-based similarity scores.
+
+    Weights:
+    - Rules: 0.4 (fast, deterministic)
+    - ML: 0.6 (semantic understanding)
+
+    Rationale:
+    - ML weight higher because it handles class renames better
+    - Rules weight provides stability when ML is uncertain
+    """
+    return (rules_similarity * rules_weight) + (ml_similarity * ml_weight)
+```
+
+### Verbose Comparison Pipeline
+
+```
+[COMPARE:START] Comparing structures for example.com/article
+  - Stored: v2, captured 2025-01-15
+  - Current: analyzing now
+
+[COMPARE:RULES] Computing rules-based similarity
+  - Tag similarity: 0.92
+  - Class similarity: 0.75 (renames detected)
+  - ID similarity: 0.95
+  - Landmark similarity: 0.90
+  - Region similarity: 0.85
+  - Combined rules similarity: 0.874
+
+[COMPARE:ML] Computing ML-based similarity
+  - Generating description for stored structure...
+  - Generating description for current structure...
+  - Computing embeddings...
+    - Stored embedding: 384 dims, norm=1.0
+    - Current embedding: 384 dims, norm=1.0
+  - Cosine similarity: 0.912
+
+[COMPARE:COMBINE] Computing combined similarity
+  - Rules (weight=0.4): 0.874 * 0.4 = 0.350
+  - ML (weight=0.6): 0.912 * 0.6 = 0.547
+  - Combined: 0.897
+
+[COMPARE:CLASSIFY] Classifying change
+  - Similarity: 0.897
+  - Thresholds: cosmetic>0.95, minor>0.85, moderate>0.70
+  - Classification: MINOR (0.85 < 0.897 < 0.95)
+  - Breaking: NO
+
+[COMPARE:RESULT] Comparison complete
+  - Rules similarity: 0.874
+  - ML similarity: 0.912
+  - Combined: 0.897
+  - Classification: MINOR
+  - Breaking: NO
+  - Adaptation needed: NO (can reuse existing strategy)
+```
+
+---
 
 ## Data Models
 
-### PageStructure (Stored in Redis)
+### PageStructure
 
 ```python
 @dataclass
 class PageStructure:
     """Fingerprint of a page's DOM structure."""
-    
+
     # Identification
     domain: str
-    page_type: str                    # e.g., "article", "listing", "product"
+    page_type: str                    # "article", "listing", "product"
     url_pattern: str                  # Regex pattern for matching URLs
-    
+    variant_id: str = "default"
+
     # Structure fingerprint
-    tag_hierarchy: dict[str, list]    # Nested tag structure
+    tag_hierarchy: TagHierarchy
     iframe_locations: list[IframeInfo]
-    script_signatures: list[str]      # Hashes of inline/external scripts
-    css_class_map: dict[str, int]     # Class name → occurrence count
-    id_attributes: set[str]           # All id attributes found
-    semantic_landmarks: dict[str, str] # ARIA landmarks and roles
-    
+    script_signatures: list[str]
+    detected_framework: str | None
+    css_class_map: dict[str, int]
+    id_attributes: set[str]
+    semantic_landmarks: dict[str, str]
+
     # Content regions
     content_regions: list[ContentRegion]
     navigation_selectors: list[str]
     pagination_pattern: PaginationInfo | None
-    
+
     # Metadata
     captured_at: datetime
     version: int
-    content_hash: str                 # Hash of structure for quick comparison
-
-@dataclass
-class IframeInfo:
-    """Tracks iframe characteristics for change detection."""
-    selector: str                     # CSS selector to locate
-    src_pattern: str                  # URL pattern of iframe src
-    position: str                     # "header", "content", "sidebar", "footer"
-    dimensions: tuple[int, int] | None
-    is_dynamic: bool                  # Loaded via JavaScript?
-
-@dataclass
-class ContentRegion:
-    """Identified content extraction zone."""
-    name: str                         # e.g., "main_content", "article_body"
-    primary_selector: str             # Best selector
-    fallback_selectors: list[str]     # Alternatives if primary fails
-    content_type: str                 # "text", "html", "structured"
-    confidence: float                 # 0-1, how reliable is this selector
+    content_hash: str
 ```
 
-### ExtractionStrategy (Stored in Redis)
+### ExtractionStrategy
 
 ```python
 @dataclass
 class ExtractionStrategy:
     """Rules for extracting content from a page type."""
-    
+
     domain: str
     page_type: str
     version: int
-    
+
     # Extraction rules
     title: SelectorRule
     content: SelectorRule
     metadata: dict[str, SelectorRule]  # author, date, tags, etc.
     images: SelectorRule | None
     links: SelectorRule
-    
+
     # Dynamic content handling
     wait_for_selectors: list[str]     # Elements to wait for (JS rendering)
-    iframe_extraction: dict[str, SelectorRule]  # iframe name → rules
-    
+    iframe_extraction: dict[str, SelectorRule]
+
     # Validation
     required_fields: list[str]
     min_content_length: int
-    
+
     # Learning metadata
     learned_at: datetime
     learning_source: str              # "initial", "adaptation", "manual"
@@ -258,901 +923,161 @@ class SelectorRule:
     primary: str                      # CSS selector
     fallbacks: list[str]              # Ordered fallback selectors
     extraction_method: str            # "text", "html", "attribute"
-    attribute_name: str | None        # If extraction_method == "attribute"
-    post_processors: list[str]        # e.g., ["strip", "normalize_whitespace"]
+    attribute_name: str | None        # If method == "attribute"
+    post_processors: list[str]        # ["strip", "normalize_whitespace"]
+    confidence: float
 ```
 
-### StructureChange (Stored in Redis)
+### StructureChange
 
 ```python
 @dataclass
 class StructureChange:
-    """Documented change between structure versions."""
-    
-    domain: str
-    page_type: str
-    detected_at: datetime
-    
-    # Version tracking
-    previous_version: int
-    new_version: int
-    
-    # Change details
+    """Single detected change between structures."""
+
     change_type: ChangeType
     affected_components: list[str]
-    
-    # Reason documentation
-    reason: str                       # Human-readable explanation
-    evidence: dict                    # Supporting data for the change
-    
-    # Impact assessment
-    breaking: bool                    # Did extraction strategy need update?
+
+    # Details
+    old_value: str | None
+    new_value: str | None
+    location: str                     # CSS selector or description
+
+    # Impact
+    breaking: bool
     fields_affected: list[str]
     confidence: float
 
-class ChangeType(Enum):
-    IFRAME_ADDED = "iframe_added"
-    IFRAME_REMOVED = "iframe_removed"
-    IFRAME_RELOCATED = "iframe_relocated"
-    IFRAME_RESIZED = "iframe_resized"
-    
-    TAG_RENAMED = "tag_renamed"           # e.g., div.article → article
-    CLASS_RENAMED = "class_renamed"       # e.g., .post-content → .article-body
-    ID_CHANGED = "id_changed"
-    
-    STRUCTURE_REORGANIZED = "structure_reorganized"
-    CONTENT_RELOCATED = "content_relocated"
-    
-    SCRIPT_ADDED = "script_added"
-    SCRIPT_REMOVED = "script_removed"
-    SCRIPT_MODIFIED = "script_modified"
-    
-    URL_PATTERN_CHANGED = "url_pattern_changed"
-    PAGINATION_CHANGED = "pagination_changed"
-    
-    MINOR_LAYOUT_SHIFT = "minor_layout_shift"
-    MAJOR_REDESIGN = "major_redesign"
+    # Documentation
+    reason: str                       # Human-readable explanation
+    evidence: dict                    # Supporting data
 ```
 
-## Redis Storage Schema
+---
+
+## Redis Storage Integration
 
 ### Key Patterns
 
 ```
-# Page structure
-structure:{domain}:{page_type}              → JSON(PageStructure)
-structure:{domain}:{page_type}:history:{v}  → JSON(PageStructure)  # Version history
+# Structures
+crawler:structure:{domain}:{page_type}:{variant_id}
+crawler:structure:{domain}:{page_type}:{variant_id}:v{n}  # History
 
-# Extraction strategy
-strategy:{domain}:{page_type}               → JSON(ExtractionStrategy)
-strategy:{domain}:{page_type}:history:{v}   → JSON(ExtractionStrategy)
+# Strategies
+crawler:strategy:{domain}:{page_type}:{variant_id}
+crawler:strategy:{domain}:{page_type}:{variant_id}:v{n}   # History
 
-# Change log
-changes:{domain}:{page_type}                → LIST[JSON(StructureChange)]
-changes:{domain}:{page_type}:{timestamp}    → JSON(StructureChange)
+# Variants
+crawler:variants:{domain}:{page_type}
 
-# Quick lookups
-domains:active                              → SET[domain]
-page_types:{domain}                         → SET[page_type]
+# Changes
+crawler:changes:{domain}:{page_type}
+
+# Embeddings (for ML fingerprinting)
+crawler:embedding:{domain}:{page_type}:{variant_id}
 ```
 
-### Example Redis Data
+### Storage Verbose Logging
 
-```json
-// Key: structure:example.com:article
-{
-    "domain": "example.com",
-    "page_type": "article",
-    "url_pattern": "^/blog/[\\w-]+/?$",
-    "tag_hierarchy": {
-        "html": {
-            "body": {
-                "div.container": {
-                    "article.post": {
-                        "h1.title": {},
-                        "div.content": {},
-                        "aside.sidebar": {}
-                    }
-                }
-            }
-        }
-    },
-    "iframe_locations": [
-        {
-            "selector": "div.content iframe.video-embed",
-            "src_pattern": "https://youtube.com/embed/*",
-            "position": "content",
-            "dimensions": [560, 315],
-            "is_dynamic": false
-        }
-    ],
-    "css_class_map": {
-        "post": 1,
-        "title": 1,
-        "content": 1,
-        "sidebar": 1,
-        "video-embed": 1
-    },
-    "captured_at": "2025-01-15T10:30:00Z",
-    "version": 3,
-    "content_hash": "a1b2c3d4e5f6"
-}
+```
+[STORE:SAVE] Saving structure
+  - Domain: example.com
+  - Page type: article
+  - Variant: default
+  - Version: 3
+  - Key: crawler:structure:example.com:article:default
+
+[STORE:HISTORY] Archiving previous version
+  - From: crawler:structure:example.com:article:default
+  - To: crawler:structure:example.com:article:default:v2
+  - Versions retained: 10
+
+[STORE:EMBEDDING] Saving embedding
+  - Key: crawler:embedding:example.com:article:default
+  - Dimensions: 384
+  - Size: 1,536 bytes
+
+[STORE:CHANGE] Logging change
+  - Key: crawler:changes:example.com:article
+  - Change type: CLASS_RENAMED
+  - Version: 2 -> 3
 ```
 
-```json
-// Key: changes:example.com:article (LIST - most recent first)
-[
-    {
-        "domain": "example.com",
-        "page_type": "article",
-        "detected_at": "2025-01-20T08:15:00Z",
-        "previous_version": 2,
-        "new_version": 3,
-        "change_type": "iframe_relocated",
-        "affected_components": ["video-embed"],
-        "reason": "Video iframe moved from sidebar (aside.sidebar iframe) to main content area (div.content iframe). Likely due to redesign prioritizing video content visibility.",
-        "evidence": {
-            "old_selector": "aside.sidebar iframe.video-embed",
-            "new_selector": "div.content iframe.video-embed",
-            "old_position": "sidebar",
-            "new_position": "content"
-        },
-        "breaking": false,
-        "fields_affected": ["embedded_video"],
-        "confidence": 0.95
-    },
-    {
-        "domain": "example.com",
-        "page_type": "article",
-        "detected_at": "2025-01-10T14:22:00Z",
-        "previous_version": 1,
-        "new_version": 2,
-        "change_type": "class_renamed",
-        "affected_components": ["main_content"],
-        "reason": "Content container class changed from 'post-body' to 'content'. This appears to be part of a CSS refactoring effort (multiple classes follow new naming convention).",
-        "evidence": {
-            "old_class": "post-body",
-            "new_class": "content",
-            "selector_updated": "div.post-body → div.content",
-            "other_renames_detected": ["post-title → title", "post-meta → meta"]
-        },
-        "breaking": true,
-        "fields_affected": ["content", "title"],
-        "confidence": 0.92
-    }
-]
-```
-
-## Key Components
-
-### StructureAnalyzer
-
-```python
-class StructureAnalyzer:
-    """
-    Analyzes HTML to create a PageStructure fingerprint.
-    
-    Handles:
-    - DOM tree traversal and hierarchy mapping
-    - Iframe detection (static and dynamically loaded)
-    - Script fingerprinting
-    - Semantic landmark identification
-    - Content region boundary detection
-    """
-    
-    def analyze(self, html: str, url: str) -> PageStructure:
-        """Create structure fingerprint from HTML."""
-    
-    def analyze_with_js(self, url: str) -> PageStructure:
-        """Use Playwright to capture post-JavaScript DOM."""
-    
-    def detect_iframes(self, soup: BeautifulSoup) -> list[IframeInfo]:
-        """Find and characterize all iframes."""
-    
-    def map_tag_hierarchy(self, soup: BeautifulSoup, max_depth: int = 10) -> dict:
-        """Build nested tag structure map."""
-    
-    def identify_content_regions(self, soup: BeautifulSoup) -> list[ContentRegion]:
-        """Heuristically identify main content, sidebar, nav, etc."""
-```
-
-### ChangeDetector
-
-```python
-class ChangeDetector:
-    """
-    Compares two PageStructure instances to identify changes.
-    
-    Change detection strategy:
-    1. Compare content hashes (fast path for no change)
-    2. Diff tag hierarchies for structural changes
-    3. Compare iframe lists for additions/removals/relocations
-    4. Diff CSS class maps for renames
-    5. Compare script signatures for JS changes
-    """
-    
-    def diff(
-        self, 
-        previous: PageStructure, 
-        current: PageStructure
-    ) -> StructureChanges:
-        """Compute all changes between two structures."""
-    
-    def has_breaking_changes(self, changes: StructureChanges) -> bool:
-        """Determine if changes require strategy re-learning."""
-    
-    def compute_similarity(
-        self, 
-        previous: PageStructure, 
-        current: PageStructure
-    ) -> float:
-        """Return 0-1 similarity score."""
-    
-    # Specialized detectors
-    def detect_iframe_changes(self, prev: list[IframeInfo], curr: list[IframeInfo]) -> list[StructureChange]:
-        """Detailed iframe change analysis."""
-    
-    def detect_class_renames(self, prev: dict, curr: dict) -> list[StructureChange]:
-        """Identify renamed CSS classes via similarity matching."""
-    
-    def detect_relocated_content(self, prev: PageStructure, curr: PageStructure) -> list[StructureChange]:
-        """Find content that moved to different DOM location."""
-```
-
-### StrategyLearner
-
-```python
-class StrategyLearner:
-    """
-    Infers extraction selectors from page structure.
-    
-    Learning approaches (in order of preference):
-    1. Semantic HTML: <article>, <main>, <h1>, etc.
-    2. ARIA landmarks: role="main", aria-label
-    3. Schema.org/microdata: itemtype, itemprop
-    4. Common class patterns: .content, .article, .post
-    5. Structural heuristics: largest text block, heading proximity
-    6. ML-based selector inference (if training data available)
-    """
-    
-    async def infer(
-        self, 
-        html: str, 
-        previous_strategy: ExtractionStrategy | None = None
-    ) -> ExtractionStrategy:
-        """Learn extraction strategy for page."""
-    
-    def infer_title_selector(self, soup: BeautifulSoup) -> SelectorRule:
-        """Find best selector for page title."""
-    
-    def infer_content_selector(self, soup: BeautifulSoup) -> SelectorRule:
-        """Find best selector for main content."""
-    
-    def adapt_selector(
-        self, 
-        old_selector: str, 
-        old_structure: PageStructure,
-        new_structure: PageStructure
-    ) -> str | None:
-        """Attempt to map old selector to new structure."""
-    
-    def generate_fallbacks(self, primary: str, soup: BeautifulSoup) -> list[str]:
-        """Create fallback selectors for robustness."""
-```
-
-### ChangeLogger
-
-```python
-class ChangeLogger:
-    """
-    Documents why structure changes occurred.
-    
-    Generates human-readable explanations by analyzing:
-    - Nature of the change (what moved/renamed/added)
-    - Patterns in the changes (bulk rename suggests refactoring)
-    - Historical changes (is this site frequently changing?)
-    - Common redesign signatures
-    """
-    
-    def document(
-        self,
-        changes: StructureChanges,
-        previous: PageStructure,
-        current: PageStructure
-    ) -> str:
-        """Generate human-readable change explanation."""
-    
-    def categorize_change(self, change: StructureChange) -> str:
-        """Classify change as maintenance, redesign, A/B test, etc."""
-    
-    def assess_impact(self, changes: StructureChanges) -> ImpactAssessment:
-        """Determine extraction impact and recovery options."""
-```
-
-## Change Detection Examples
-
-### Example 1: Iframe Relocation
-
-```python
-# Previous structure
-previous_iframe = IframeInfo(
-    selector="aside.sidebar iframe.video-embed",
-    src_pattern="https://youtube.com/embed/*",
-    position="sidebar",
-    dimensions=(300, 169),
-    is_dynamic=False
-)
-
-# Current structure (after site update)
-current_iframe = IframeInfo(
-    selector="div.content iframe.video-embed",
-    src_pattern="https://youtube.com/embed/*",
-    position="content",
-    dimensions=(560, 315),
-    is_dynamic=False
-)
-
-# Change detection
-change = StructureChange(
-    change_type=ChangeType.IFRAME_RELOCATED,
-    affected_components=["video-embed"],
-    reason="Video iframe moved from sidebar to main content area. "
-           "Dimensions increased from 300x169 to 560x315, suggesting "
-           "redesign to feature video content more prominently.",
-    evidence={
-        "old_selector": "aside.sidebar iframe.video-embed",
-        "new_selector": "div.content iframe.video-embed",
-        "old_position": "sidebar",
-        "new_position": "content",
-        "dimension_change": "300x169 → 560x315"
-    },
-    breaking=False,  # Same class name, strategy auto-adapts
-    fields_affected=["embedded_video"],
-    confidence=0.95
-)
-```
-
-### Example 2: Class Rename Detection
-
-```python
-# Previous CSS class map
-previous_classes = {
-    "post-title": 5,
-    "post-body": 5,
-    "post-meta": 5,
-    "post-author": 5
-}
-
-# Current CSS class map (after refactoring)
-current_classes = {
-    "title": 5,
-    "content": 5,
-    "meta": 5,
-    "author": 5
-}
-
-# Detector identifies pattern: "post-" prefix removed
-changes = [
-    StructureChange(
-        change_type=ChangeType.CLASS_RENAMED,
-        reason="Bulk class rename detected: 'post-' prefix removed from 4 classes. "
-               "This appears to be a CSS refactoring effort following BEM or "
-               "simplified naming conventions.",
-        evidence={
-            "renames": {
-                "post-title": "title",
-                "post-body": "content", 
-                "post-meta": "meta",
-                "post-author": "author"
-            },
-            "pattern": "prefix_removal:post-"
-        },
-        breaking=True,  # Selectors need updating
-        fields_affected=["title", "content", "metadata"]
-    )
-]
-
-# Strategy learner auto-updates selectors
-new_strategy.title.primary = "h1.title"  # was "h1.post-title"
-new_strategy.content.primary = "div.content"  # was "div.post-body"
-```
-
-### Example 3: JavaScript-Loaded Content
-
-```python
-# Static HTML analysis shows empty container
-static_structure = PageStructure(
-    content_regions=[
-        ContentRegion(
-            name="main_content",
-            primary_selector="div#app",
-            content_type="empty",  # No content in static HTML
-            confidence=0.3
-        )
-    ]
-)
-
-# Playwright analysis after JS execution
-js_structure = PageStructure(
-    content_regions=[
-        ContentRegion(
-            name="main_content",
-            primary_selector="div#app article.post",
-            content_type="structured",
-            confidence=0.9
-        )
-    ],
-    script_signatures=["react-bundle-abc123", "hydrate-xyz789"]
-)
-
-# Strategy includes JS wait conditions
-strategy = ExtractionStrategy(
-    wait_for_selectors=["div#app article.post"],
-    title=SelectorRule(
-        primary="div#app article.post h1",
-        extraction_method="text"
-    )
-)
-
-# Change logged
-change = StructureChange(
-    change_type=ChangeType.SCRIPT_ADDED,
-    reason="Site migrated to client-side rendering (React detected). "
-           "Content now requires JavaScript execution. Static HTML contains "
-           "only empty container div#app.",
-    evidence={
-        "framework": "React",
-        "hydration_detected": True,
-        "static_content_length": 0,
-        "js_content_length": 15420
-    }
-)
-```
-
-## Integration with Compliance
-
-The adaptive extraction system respects all compliance constraints:
-
-```python
-async def extract_with_compliance(
-    self,
-    url: str,
-    html: str,
-    rate_limiter: RateLimiter,
-    robots_checker: RobotsChecker
-) -> ExtractionResult:
-    """
-    Extract content while maintaining compliance.
-    
-    CRITICAL: Adaptive behavior never bypasses rate limits.
-    If JS rendering is needed, it still goes through the rate limiter.
-    """
-    domain = get_domain(url)
-    
-    # Check if we need JS rendering
-    static_structure = self.analyzer.analyze(html, url)
-    
-    if static_structure.needs_js_rendering():
-        # Rate limit the Playwright request
-        await rate_limiter.acquire(domain)
-        
-        # Verify still allowed (robots.txt may have changed)
-        if not await robots_checker.is_allowed(url, self.user_agent):
-            raise RobotsBlockedError(url)
-        
-        # Now render with JS
-        js_structure = await self.analyzer.analyze_with_js(url)
-        return self._extract_from_structure(js_structure)
-    
-    return self._extract_from_structure(static_structure)
-```
-
-## Testing Requirements
-
-### Unit Tests
-
-```bash
-# Structure analysis
-pytest tests/unit/adaptive/test_structure_analyzer.py -v
-
-# Change detection
-pytest tests/unit/adaptive/test_change_detector.py -v
-
-# Strategy learning
-pytest tests/unit/adaptive/test_strategy_learner.py -v
-```
-
-### Required Test Cases
-
-| Component | Test Case | Coverage |
-|-----------|-----------|----------|
-| StructureAnalyzer | Parse simple HTML | ✓ |
-| StructureAnalyzer | Detect nested iframes | ✓ |
-| StructureAnalyzer | Handle malformed HTML | ✓ |
-| ChangeDetector | Detect iframe relocation | ✓ |
-| ChangeDetector | Detect class rename patterns | ✓ |
-| ChangeDetector | Compute similarity scores | ✓ |
-| StrategyLearner | Infer from semantic HTML | ✓ |
-| StrategyLearner | Adapt renamed selectors | ✓ |
-| StrategyLearner | Generate robust fallbacks | ✓ |
-| ChangeLogger | Document single change | ✓ |
-| ChangeLogger | Document bulk changes | ✓ |
-| Integration | Redis round-trip | ✓ |
-| Integration | Full extract→change→adapt cycle | ✓ |
-
-### Test Fixtures
-
-```python
-# tests/fixtures/structures/
-article_v1.html          # Original article structure
-article_v2_iframe.html   # Iframe relocated
-article_v3_classes.html  # Classes renamed
-article_v4_spa.html      # Migrated to SPA
-
-# tests/fixtures/expected/
-article_v1_structure.json
-article_v1_to_v2_changes.json
-article_v2_to_v3_changes.json
-```
+---
 
 ## Common Tasks
 
 ### Adding a New Change Type
 
-1. Add enum value to `ChangeType` in `models.py`
-2. Implement detection in `ChangeDetector.detect_*` methods
-3. Add reason templates to `ChangeLogger`
-4. Add test fixtures and test cases
-5. Update metrics labels
+1. Add enum value to `ChangeType` in `crawler/models.py`:
+   ```python
+   class ChangeType(Enum):
+       # ... existing types
+       NEW_CHANGE_TYPE = "new_change_type"
+   ```
 
-### Debugging Extraction Failures
+2. Implement detection in `change_detector.py`:
+   ```python
+   def _detect_new_change_type(
+       self, prev: PageStructure, curr: PageStructure, verbose: bool
+   ) -> list[StructureChange]:
+       if verbose:
+           self._log("[CHANGE:NEW_TYPE] Detecting new change type...")
+       # ... detection logic
+   ```
 
-```python
-# Enable detailed logging
-import logging
-logging.getLogger("crawler.adaptive").setLevel(logging.DEBUG)
+3. Add to main detection method:
+   ```python
+   def detect(self, ...):
+       # ... existing detections
+       changes.extend(self._detect_new_change_type(prev, curr, verbose))
+   ```
 
-# Inspect stored structure
-redis_client = Redis.from_url(REDIS_URL)
-structure = json.loads(redis_client.get("structure:example.com:article"))
-print(json.dumps(structure, indent=2))
+4. Update verbose logging documentation
 
-# View change history
-changes = redis_client.lrange("changes:example.com:article", 0, -1)
-for change in changes:
-    print(json.loads(change))
+### Customizing Learning Priority
 
-# Force re-learning
-await structure_store.delete("example.com", "article")
-# Next crawl will learn fresh
-```
-
-### Manual Strategy Override
-
-```python
-# When automatic learning fails, provide manual rules
-manual_strategy = ExtractionStrategy(
-    domain="difficult-site.com",
-    page_type="product",
-    title=SelectorRule(
-        primary="span[data-test='product-name']",
-        fallbacks=["h1", ".product-title"],
-        extraction_method="text"
-    ),
-    learning_source="manual"
-)
-
-await structure_store.save_strategy(manual_strategy)
-```
-
-## ML Models for Strategy Learning
-
-The `StrategyLearner` uses an ensemble approach optimized for low-latency inference without GPU requirements.
-
-### Model Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     StrategyLearner                              │
-├─────────────────────────────────────────────────────────────────┤
-│  1. Rule-Based Engine (fastest, highest priority)               │
-│     - Semantic HTML: <article>, <main>, <h1>                    │
-│     - Schema.org: itemtype, itemprop attributes                 │
-│     - ARIA landmarks: role="main", aria-label                   │
-│                                                                  │
-│  2. Tree-Based Classifier (primary ML model)                    │
-│     - Model: LightGBM or XGBoost                                │
-│     - Task: Score candidate selectors for each field            │
-│     - Latency: <1ms per candidate                               │
-│                                                                  │
-│  3. Semantic Similarity (for selector adaptation)               │
-│     - Model: all-MiniLM-L6-v2 (sentence-transformers)           │
-│     - Task: Match old selectors to new DOM when classes rename  │
-│     - Latency: ~5ms per comparison batch                        │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 1. Tree-Based Selector Scoring (LightGBM)
-
-**Why LightGBM/XGBoost:**
-- Tabular features extracted from DOM are ideal for gradient boosting
-- Sub-millisecond inference on CPU
-- Interpretable feature importance aids debugging
-- Small model size (~1-5MB)
-- No GPU required
-
-**Features extracted per candidate selector:**
+Modify `strategy_learner.py`:
 
 ```python
-@dataclass
-class SelectorFeatures:
-    # Structural features
-    tag_name: str                    # Categorical: div, article, section, etc.
-    depth: int                       # Distance from root
-    child_count: int                 # Direct children
-    descendant_count: int            # Total descendants
-    sibling_index: int               # Position among siblings
-    
-    # Text features
-    text_length: int                 # Character count
-    text_density: float              # text_length / descendant_count
-    word_count: int
-    sentence_count: int
-    has_paragraphs: bool             # Contains <p> tags
-    
-    # Class/ID features
-    class_count: int                 # Number of CSS classes
-    has_semantic_class: bool         # Contains "content", "article", "body", etc.
-    has_layout_class: bool           # Contains "container", "wrapper", "grid"
-    id_present: bool
-    id_is_semantic: bool             # ID like "main-content" vs "div-42"
-    
-    # Context features
-    preceding_heading_level: int     # h1=1, h2=2, ..., none=0
-    heading_distance: int            # DOM distance to nearest heading
-    contains_images: bool
-    contains_links: bool
-    link_density: float              # links / text_length
-    
-    # Historical features (if available)
-    matched_previous_selector: bool  # Did this selector exist before?
-    previous_confidence: float       # Confidence from last extraction
-```
-
-**Training data sources:**
-- Common Crawl with manual annotations
-- Open datasets: SWDE, ClueWeb extractions
-- Self-supervised: pages with Schema.org markup provide ground truth
-
-**Model training:**
-
-```python
-import lightgbm as lgb
-
-# Binary classifier per field type
-title_model = lgb.LGBMClassifier(
-    n_estimators=100,
-    max_depth=6,
-    learning_rate=0.1,
-    num_leaves=31,
-    min_child_samples=20,
-    objective='binary',
-    metric='auc'
-)
-
-# Features: matrix of SelectorFeatures for all candidates
-# Labels: 1 if selector correctly extracts title, 0 otherwise
-title_model.fit(X_train, y_train)
-
-# Inference: score all candidate selectors, pick highest
-candidate_scores = title_model.predict_proba(candidates)[:, 1]
-best_selector = candidates[candidate_scores.argmax()]
-```
-
-### 2. Semantic Similarity for Selector Adaptation (MiniLM)
-
-When CSS classes are renamed, the tree model alone can't identify that `div.post-body` and `div.content` refer to the same element. We use sentence embeddings to find semantic matches.
-
-**Why all-MiniLM-L6-v2:**
-- 22M parameters, runs efficiently on CPU
-- 384-dimensional embeddings
-- Optimized for semantic similarity tasks
-- ~5ms per batch of comparisons
-
-**Adaptation workflow:**
-
-```python
-from sentence_transformers import SentenceTransformer
-import numpy as np
-
-class SelectorAdapter:
-    def __init__(self):
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
-    
-    def adapt_selector(
-        self,
-        old_selector: str,
-        old_context: str,          # Surrounding HTML context
-        new_candidates: list[str],
-        new_contexts: list[str]
-    ) -> tuple[str, float]:
-        """Find best matching selector in new DOM."""
-        
-        # Create rich descriptions for embedding
-        old_description = self._describe_selector(old_selector, old_context)
-        new_descriptions = [
-            self._describe_selector(sel, ctx) 
-            for sel, ctx in zip(new_candidates, new_contexts)
-        ]
-        
-        # Embed all descriptions
-        old_embedding = self.model.encode(old_description)
-        new_embeddings = self.model.encode(new_descriptions)
-        
-        # Cosine similarity
-        similarities = np.dot(new_embeddings, old_embedding) / (
-            np.linalg.norm(new_embeddings, axis=1) * np.linalg.norm(old_embedding)
-        )
-        
-        best_idx = similarities.argmax()
-        return new_candidates[best_idx], similarities[best_idx]
-    
-    def _describe_selector(self, selector: str, context: str) -> str:
-        """Create semantic description of selector's purpose."""
-        # Example: "div.post-body" + context → 
-        # "main content container with class post-body containing article text paragraphs"
-        return f"{selector} {self._extract_semantic_hints(context)}"
-```
-
-**Example adaptation:**
-
-```python
-# Old site structure
-old_selector = "div.post-body"
-old_context = "<div class='post-body'><p>Article content here...</p></div>"
-
-# New site structure (after redesign)
-new_candidates = ["div.content", "div.article-text", "main", "div.sidebar"]
-new_contexts = [
-    "<div class='content'><p>Article content here...</p></div>",
-    "<div class='article-text'>Short summary</div>",
-    "<main><nav>...</nav></main>",
-    "<div class='sidebar'>Related posts</div>"
+LEARNING_PRIORITY = [
+    ("schema_org", 0.98),    # Schema.org gets highest confidence
+    ("semantic_html", 0.95), # HTML5 semantic elements
+    ("aria", 0.90),          # ARIA landmarks
+    ("class_patterns", 0.85), # Common class names
+    ("heuristics", 0.80),    # Structural heuristics
 ]
-
-best_match, confidence = adapter.adapt_selector(
-    old_selector, old_context, 
-    new_candidates, new_contexts
-)
-# Result: ("div.content", 0.89)
 ```
 
-### 3. Rule-Based Fallbacks
+### Adjusting Change Thresholds
 
-When ML confidence is below threshold or models aren't available:
+Modify `change_detector.py`:
 
 ```python
-class RuleBasedInference:
-    """Deterministic selector inference using HTML semantics."""
-    
-    TITLE_PRIORITY = [
-        "h1",                           # Standard
-        "article h1",                   # Scoped to article
-        "[itemprop='headline']",        # Schema.org
-        ".title", ".headline",          # Common classes
-        "meta[property='og:title']",    # OpenGraph fallback
-    ]
-    
-    CONTENT_PRIORITY = [
-        "article",                      # Semantic HTML5
-        "[itemprop='articleBody']",     # Schema.org
-        "main",                         # Landmark
-        "[role='main']",                # ARIA
-        ".content", ".post-content",    # Common classes
-        "#content", "#main-content",    # Common IDs
-    ]
-    
-    def infer_title(self, soup: BeautifulSoup) -> SelectorRule | None:
-        for selector in self.TITLE_PRIORITY:
-            elements = soup.select(selector)
-            if elements and self._has_reasonable_title(elements[0]):
-                return SelectorRule(
-                    primary=selector,
-                    fallbacks=self.TITLE_PRIORITY[self.TITLE_PRIORITY.index(selector)+1:],
-                    extraction_method="text",
-                    confidence=0.7  # Rule-based confidence cap
-                )
-        return None
+class ChangeThresholds:
+    COSMETIC = 0.95    # > 95% similar = cosmetic
+    MINOR = 0.85       # 85-95% = minor
+    MODERATE = 0.70    # 70-85% = moderate
+    BREAKING = 0.70    # < 70% = breaking
 ```
 
-### Model Files and Loading
-
-```
-crawler/
-└── adaptive/
-    └── models/
-        ├── selector_scorer_title.lgb      # LightGBM model (~2MB)
-        ├── selector_scorer_content.lgb
-        ├── selector_scorer_metadata.lgb
-        └── minilm/                         # Sentence transformer (~90MB)
-            ├── config.json
-            ├── pytorch_model.bin
-            └── tokenizer/
-```
-
-**Lazy loading for memory efficiency:**
-
-```python
-class StrategyLearner:
-    def __init__(self, models_dir: Path):
-        self.models_dir = models_dir
-        self._lgb_models: dict[str, lgb.Booster] = {}
-        self._sentence_model: SentenceTransformer | None = None
-    
-    def _get_lgb_model(self, field: str) -> lgb.Booster:
-        if field not in self._lgb_models:
-            path = self.models_dir / f"selector_scorer_{field}.lgb"
-            self._lgb_models[field] = lgb.Booster(model_file=str(path))
-        return self._lgb_models[field]
-    
-    def _get_sentence_model(self) -> SentenceTransformer:
-        if self._sentence_model is None:
-            self._sentence_model = SentenceTransformer(
-                str(self.models_dir / "minilm")
-            )
-        return self._sentence_model
-```
-
-### Training Pipeline
-
-```bash
-# Download and prepare training data
-python scripts/prepare_training_data.py \
-    --common-crawl-sample 100000 \
-    --schema-org-filter \
-    --output data/training/
-
-# Train selector scoring models
-python scripts/train_selector_models.py \
-    --data data/training/ \
-    --output crawler/adaptive/models/ \
-    --fields title,content,author,date
-
-# Evaluate on held-out test set
-python scripts/evaluate_models.py \
-    --models crawler/adaptive/models/ \
-    --test-data data/test/ \
-    --report evaluation_report.json
-```
-
-### Why Not LLMs?
-
-| Consideration | LLM (e.g., GPT-4) | Our Approach |
-|--------------|-------------------|--------------|
-| Latency | 500-2000ms | <10ms |
-| Cost per inference | $0.01-0.10 | ~$0 (local) |
-| GPU required | Often | No |
-| Interpretability | Low | High (feature importance) |
-| Offline capability | No | Yes |
-| Accuracy on this task | Good | Comparable (specialized) |
-
-LLMs are overkill for selector inference. The problem is well-structured, the feature space is bounded, and we need sub-10ms latency for production crawling.
-
-**When LLMs might help:** Generating human-readable change explanations in `ChangeLogger`. This is optional, non-blocking, and can be done async.
+---
 
 ## Performance Considerations
 
 | Operation | Typical Latency | Notes |
 |-----------|-----------------|-------|
-| Structure analysis | 10-50ms | Depends on DOM size |
-| Change detection | 5-20ms | Fast hash comparison first |
-| Strategy inference | 50-200ms | ML inference if enabled |
+| Structure analysis | 20-50ms | Depends on DOM size |
+| Rules-based comparison | 5-15ms | Fast hash first |
+| ML embedding generation | 100-200ms | First time only, cached |
+| ML similarity comparison | 5-10ms | Vector math |
+| Strategy learning | 50-150ms | Depends on page complexity |
 | Redis read | 1-5ms | Local Redis |
 | Redis write | 1-5ms | Local Redis |
 
 ### Caching Strategy
 
-- Structure TTL: 7 days (configurable)
-- Strategy TTL: 7 days (same as structure)
-- Change log retention: 90 days
-- In-memory LRU cache for hot domains: 1000 entries
+- Structure embeddings: Cached in Redis with structure
+- Embedding model: Loaded once, kept in memory
+- Comparison results: Not cached (fast to compute)
