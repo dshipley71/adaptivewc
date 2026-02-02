@@ -1,1146 +1,1036 @@
-# AGENTS.md - Adaptive Web Crawler
+# AGENTS.md - Adaptive Structure Fingerprinting System
 
-An intelligent, ethical web crawler with legal compliance (CFAA/GDPR/CCPA), robots.txt respect, adaptive rate limiting, and dual fingerprinting (rules-based + ML-based) for self-learning structure extraction.
+A complete specification for building an intelligent web structure fingerprinting system with adaptive learning, Ollama Cloud LLM integration, and comprehensive verbose logging.
 
-## Project Overview
+## Purpose
 
-This adaptive web crawler is designed for responsible, large-scale web data collection. It automatically respects site policies (robots.txt, crawl-delay directives), implements user-configurable rate limiting to prevent denial of service, and adapts its behavior based on server responses.
+This document serves as a **complete blueprint** for generating all source code, configuration, and documentation for the Adaptive Structure Fingerprinting System. An AI assistant or developer can use this specification to create the entire application from scratch.
 
-**Key Differentiators:**
-1. **Independent Fingerprinting Modes**: Three modes (Rules, ML, Adaptive) that operate independently - not combined
-2. **Ollama Cloud LLM Integration**: Uses Ollama Cloud API for intelligent structure descriptions and change analysis
-3. **Comprehensive Verbose Logging**: Every operation is logged with detailed context for debugging and monitoring
-4. **Adaptive Learning**: When a site's DOM changes, the crawler detects changes, adapts extraction strategies, and persists to Redis
+---
 
-## Quick Start
+## Project Structure
 
-```bash
-# Install dependencies
-pip install -e ".[dev]"
-
-# Start Redis (required for structure storage)
-docker run -d -p 6379:6379 redis:7-alpine
-
-# Set Ollama Cloud API key
-export OLLAMA_CLOUD_API_KEY="your-api-key"
-
-# Basic crawl with verbose logging
-python -m crawler --seed-url https://example.com --output ./data --verbose
-
-# Run example with ML fingerprinting
-python examples/news_monitor_ml.py --url https://news.ycombinator.com --verbose
-```
-
-## Architecture Overview
+Generate the following directory structure:
 
 ```
-crawler/
-├── core/                           # Orchestration & HTTP
-│   ├── crawler.py                  # Main crawler orchestrator
-│   ├── fetcher.py                  # HTTP client with compliance pipeline
-│   ├── scheduler.py                # URL frontier and prioritization
-│   ├── recrawl_scheduler.py        # Cron-based periodic recrawling
-│   ├── renderer.py                 # Playwright JS rendering
-│   └── distributed.py              # Multi-worker coordination
+adaptive-fingerprint/
+├── AGENTS.md                       # This file (project specification)
+├── README.md                       # Project documentation
+├── requirements.txt                # Python dependencies
+├── pyproject.toml                  # Project metadata and build config
+├── config.example.yaml             # Example configuration file
+├── .env.example                    # Example environment variables
 │
-├── compliance/                     # Ethical crawling constraints
-│   ├── robots_parser.py            # robots.txt parsing and caching
-│   ├── rate_limiter.py             # Per-domain adaptive rate limiting
-│   └── sitemap_parser.py           # XML sitemap processing
+├── fingerprint/                    # Main package
+│   ├── __init__.py                 # Package initialization
+│   ├── __main__.py                 # CLI entry point
+│   ├── config.py                   # Configuration dataclasses
+│   ├── models.py                   # Core data models
+│   ├── exceptions.py               # Custom exceptions
+│   │
+│   ├── core/                       # Core orchestration
+│   │   ├── __init__.py
+│   │   ├── analyzer.py             # Main analyzer orchestrator
+│   │   ├── fetcher.py              # HTTP fetching with compliance
+│   │   └── verbose.py              # Verbose logging utilities
+│   │
+│   ├── adaptive/                   # Adaptive fingerprinting
+│   │   ├── __init__.py
+│   │   ├── structure_analyzer.py   # Rules-based DOM analysis
+│   │   ├── change_detector.py      # Change detection and classification
+│   │   └── strategy_learner.py     # CSS selector inference
+│   │
+│   ├── ml/                         # ML and Ollama Cloud integration
+│   │   ├── __init__.py
+│   │   ├── embeddings.py           # Embedding generation
+│   │   ├── ollama_client.py        # Ollama Cloud API client
+│   │   └── classifier.py           # Page type classification
+│   │
+│   ├── storage/                    # Redis persistence
+│   │   ├── __init__.py
+│   │   ├── structure_store.py      # Structure storage
+│   │   ├── embedding_store.py      # Embedding storage
+│   │   └── cache.py                # Caching utilities
+│   │
+│   └── utils/                      # Utilities
+│       ├── __init__.py
+│       ├── url_utils.py            # URL normalization
+│       └── html_utils.py           # HTML parsing utilities
 │
-├── legal/                          # CFAA/GDPR/CCPA compliance
-│   ├── cfaa_checker.py             # Computer Fraud & Abuse Act authorization
-│   └── pii_detector.py             # PII detection & GDPR/CCPA handling
-│
-├── extraction/                     # Content parsing & learning
-│   ├── content_extractor.py        # CSS selector-based extraction
-│   └── link_extractor.py           # URL discovery from HTML
-│
-├── adaptive/                       # Structure learning (see adaptive/AGENTS.md)
-│   ├── structure_analyzer.py       # Rules-based DOM fingerprinting
-│   ├── change_detector.py          # Structure diff and change classification
-│   └── strategy_learner.py         # CSS selector inference
-│
-├── ml/                             # ML & Ollama Cloud integration (see ml/AGENTS.md)
-│   └── embeddings.py               # Embeddings, classifiers, LLM descriptions
-│
-├── storage/                        # Redis persistence layer
-│   ├── structure_store.py          # Basic structure fingerprint storage
-│   ├── structure_llm_store.py      # LLM-enhanced storage with embeddings
-│   ├── url_store.py                # URL frontier & visited tracking
-│   ├── robots_cache.py             # Cached robots.txt with TTL
-│   └── factory.py                  # Storage provider factory
-│
-├── deduplication/
-│   └── content_hasher.py           # Content deduplication (SimHash)
-│
-├── alerting/
-│   └── alerter.py                  # Change & failure notifications
-│
-├── utils/
-│   ├── url_utils.py                # URL normalization and validation
-│   ├── metrics.py                  # Prometheus metrics
-│   └── logging.py                  # Structured verbose logging
-│
-├── config.py                       # Configuration dataclasses
-├── models.py                       # Core data models (30+ dataclasses)
-├── exceptions.py                   # Custom exception hierarchy
-└── __main__.py                     # CLI entry point
-
-examples/                           # Reference implementations
-├── news_monitor_ml.py              # ML fingerprinting with Ollama Cloud
-├── sports_news_monitor_ml.py       # Sports monitoring with embeddings
-├── demo_adaptive_extraction.py     # Strategy learning demonstration
-├── scheduled_recrawl_example.py    # Cron-based recrawling
-├── js_rendering_example.py         # Playwright integration
-├── sitemap_crawl_example.py        # Sitemap-based crawling
-└── distributed_crawl_example.py    # Multi-worker coordination
+└── examples/                       # Example scripts
+    ├── basic_fingerprint.py        # Basic usage example
+    ├── adaptive_mode.py            # Adaptive mode example
+    └── ml_fingerprint.py           # ML mode with Ollama Cloud
 ```
 
 ---
 
-## Module Documentation
+## Dependencies
 
-### 1. Core Module (`crawler/core/`)
+### requirements.txt
 
-#### 1.1 Crawler Orchestrator (`crawler.py`)
+Generate with these exact contents:
 
-The main entry point that coordinates all crawling operations.
+```
+# Core dependencies
+httpx>=0.27.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+redis>=5.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+pyyaml>=6.0.0
 
-```python
-class Crawler:
-    """
-    Main crawler orchestrator.
+# ML dependencies
+sentence-transformers>=2.3.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
 
-    Responsibilities:
-    - Initialize all subsystems (fetcher, analyzer, extractor)
-    - Manage URL frontier via scheduler
-    - Coordinate compliance pipeline
-    - Handle graceful shutdown and checkpointing
+# Optional ML backends (install as needed)
+# xgboost>=2.0.0
+# lightgbm>=4.0.0
 
-    Verbose Logging:
-    - [CRAWLER:INIT] Configuration loaded, subsystems initialized
-    - [CRAWLER:START] Crawl session started with seed URLs
-    - [CRAWLER:URL] Processing URL with priority and depth
-    - [CRAWLER:FETCH] Fetch result with status, timing, size
-    - [CRAWLER:EXTRACT] Extraction result with field counts
-    - [CRAWLER:CHANGE] Structure change detected with similarity score
-    - [CRAWLER:CHECKPOINT] State checkpointed to Redis
-    - [CRAWLER:COMPLETE] Crawl statistics summary
-    """
+# Async support
+anyio>=4.0.0
 
-    async def crawl(self, seed_urls: list[str]) -> CrawlResult:
-        """Execute crawl from seed URLs."""
-
-    async def process_url(self, url: str) -> ProcessResult:
-        """Process single URL through full pipeline."""
+# CLI
+click>=8.1.0
+rich>=13.0.0
 ```
 
-**Verbose Output Example:**
-```
-[CRAWLER:INIT] Initializing crawler with config:
-  - Rate limit: 1.0 req/sec per domain
-  - Max depth: 10
-  - Fingerprinting: rules-based + ML (Ollama Cloud)
-  - Redis: redis://localhost:6379/0
+### pyproject.toml
 
-[CRAWLER:URL] Processing: https://example.com/article/123
-  - Priority: 0.8
-  - Depth: 2
-  - Domain queue size: 15
+```toml
+[project]
+name = "adaptive-fingerprint"
+version = "1.0.0"
+description = "Adaptive web structure fingerprinting with ML and Ollama Cloud integration"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
 
-[CRAWLER:FETCH] Fetch complete:
-  - Status: 200 OK
-  - Content-Type: text/html
-  - Size: 45,230 bytes
-  - Duration: 245ms
-  - Rate delay applied: 1,000ms
+dependencies = [
+    "httpx>=0.27.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    "redis>=5.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "pyyaml>=6.0.0",
+    "sentence-transformers>=2.3.0",
+    "numpy>=1.24.0",
+    "scikit-learn>=1.3.0",
+    "anyio>=4.0.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+]
 
-[CRAWLER:CHANGE] Structure change detected:
-  - Domain: example.com
-  - Page type: article
-  - Similarity: 0.72 (MODERATE change)
-  - Breaking: Yes
-  - Action: Re-learning extraction strategy
-```
+[project.optional-dependencies]
+ml-backends = [
+    "xgboost>=2.0.0",
+    "lightgbm>=4.0.0",
+]
 
-#### 1.2 Fetcher (`fetcher.py`)
+[project.scripts]
+fingerprint = "fingerprint.__main__:main"
 
-HTTP client with full compliance pipeline.
-
-```python
-class Fetcher:
-    """
-    HTTP fetcher with compliance-first architecture.
-
-    Pipeline Order (ALWAYS this sequence):
-    1. CFAA authorization check
-    2. robots.txt check
-    3. Rate limiting acquire
-    4. HTTP fetch with timeout/retry
-    5. GDPR PII processing
-    6. Rate adaptation based on response
-
-    Verbose Logging:
-    - [FETCHER:CFAA] Authorization check result
-    - [FETCHER:ROBOTS] robots.txt check result
-    - [FETCHER:RATE] Rate limit acquired, delay applied
-    - [FETCHER:HTTP] Request sent, response received
-    - [FETCHER:PII] PII detection and handling
-    - [FETCHER:ADAPT] Rate adaptation from response
-    """
-```
-
-**Compliance Pipeline:**
-```python
-async def fetch_url(self, url: str) -> FetchResult:
-    domain = get_domain(url)
-
-    # 1. CFAA authorization check
-    self._log_verbose(f"[FETCHER:CFAA] Checking authorization for {url}")
-    auth = await self.cfaa_checker.is_authorized(url)
-    if not auth.authorized:
-        self._log_verbose(f"[FETCHER:CFAA] BLOCKED: {auth.reason}")
-        return FetchResult.blocked(url, reason=auth.reason)
-    self._log_verbose(f"[FETCHER:CFAA] AUTHORIZED: {auth.basis}")
-
-    # 2. robots.txt check
-    self._log_verbose(f"[FETCHER:ROBOTS] Checking robots.txt for {url}")
-    if not await self.robots_checker.is_allowed(url, self.user_agent):
-        self._log_verbose(f"[FETCHER:ROBOTS] BLOCKED by robots.txt")
-        return FetchResult.blocked(url, reason="robots.txt")
-    self._log_verbose(f"[FETCHER:ROBOTS] ALLOWED")
-
-    # 3. Rate limiting
-    delay = await self.rate_limiter.get_delay(domain)
-    self._log_verbose(f"[FETCHER:RATE] Acquiring rate limit slot, delay={delay}s")
-    await self.rate_limiter.acquire(domain)
-    self._log_verbose(f"[FETCHER:RATE] Slot acquired")
-
-    # 4. HTTP fetch
-    self._log_verbose(f"[FETCHER:HTTP] Sending GET request to {url}")
-    start_time = time.monotonic()
-    response = await self.http_client.get(url, timeout=self.config.timeout)
-    duration = time.monotonic() - start_time
-    self._log_verbose(f"[FETCHER:HTTP] Response: {response.status_code}, "
-                      f"size={len(response.content)} bytes, duration={duration*1000:.0f}ms")
-
-    # 5. GDPR PII check
-    if self.gdpr_config.enabled:
-        self._log_verbose(f"[FETCHER:PII] Scanning for PII...")
-        response = await self.pii_handler.process(response)
-        self._log_verbose(f"[FETCHER:PII] Scan complete, action={self.pii_handler.action}")
-
-    # 6. Rate adaptation
-    self._log_verbose(f"[FETCHER:ADAPT] Adapting rate based on response")
-    self.rate_limiter.adapt(domain, response)
-
-    return FetchResult.success(url, response)
-```
-
-#### 1.3 Scheduler (`scheduler.py`)
-
-URL frontier management with priority queuing.
-
-```python
-class Scheduler:
-    """
-    URL frontier with priority-based scheduling.
-
-    Features:
-    - Priority queue (higher = more important)
-    - Per-domain queuing to respect rate limits
-    - Depth tracking for crawl limits
-    - Deduplication via visited set
-
-    Verbose Logging:
-    - [SCHEDULER:ADD] URL added with priority and depth
-    - [SCHEDULER:SKIP] URL skipped (visited, blocked, depth exceeded)
-    - [SCHEDULER:NEXT] Next URL selected from frontier
-    - [SCHEDULER:STATS] Queue statistics
-    """
-```
-
-#### 1.4 Recrawl Scheduler (`recrawl_scheduler.py`)
-
-Cron-based periodic recrawling.
-
-```python
-class RecrawlScheduler:
-    """
-    Scheduled recrawling with cron expressions.
-
-    Features:
-    - Cron expression parsing (e.g., "0 */6 * * *" = every 6 hours)
-    - Adaptive intervals based on change frequency
-    - Priority boosting for frequently changing pages
-
-    Verbose Logging:
-    - [RECRAWL:SCHEDULE] URL scheduled with cron expression
-    - [RECRAWL:DUE] URL due for recrawl
-    - [RECRAWL:ADAPTIVE] Interval adjusted based on change history
-    """
-```
-
-#### 1.5 Renderer (`renderer.py`)
-
-Playwright-based JavaScript rendering.
-
-```python
-class JSRenderer:
-    """
-    JavaScript rendering via Playwright.
-
-    Used when:
-    - JS detection score > 0.8
-    - Static extraction fails
-    - Framework detected (React, Vue, Angular, etc.)
-
-    Verbose Logging:
-    - [RENDERER:DETECT] JS rendering needed, score={score}, framework={framework}
-    - [RENDERER:LAUNCH] Browser launched
-    - [RENDERER:NAVIGATE] Navigating to URL
-    - [RENDERER:WAIT] Waiting for selectors/network idle
-    - [RENDERER:CAPTURE] DOM captured after JS execution
-    - [RENDERER:COMPARE] Static vs JS content size comparison
-    """
-```
-
-#### 1.6 Distributed Coordinator (`distributed.py`)
-
-Multi-worker coordination via Redis.
-
-```python
-class DistributedCoordinator:
-    """
-    Coordinates multiple crawler workers.
-
-    Features:
-    - Worker registration and heartbeat
-    - Domain assignment to prevent conflicts
-    - Load balancing across workers
-    - Failure detection and reassignment
-
-    Verbose Logging:
-    - [DISTRIBUTED:REGISTER] Worker registered with ID
-    - [DISTRIBUTED:HEARTBEAT] Heartbeat sent/received
-    - [DISTRIBUTED:ASSIGN] Domain assigned to worker
-    - [DISTRIBUTED:REBALANCE] Load rebalanced across workers
-    """
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 ```
 
 ---
 
-### 2. Compliance Module (`crawler/compliance/`)
+## Configuration
 
-#### 2.1 Robots Parser (`robots_parser.py`)
-
-Full robots.txt compliance with caching.
-
-```python
-class RobotsChecker:
-    """
-    robots.txt parsing and compliance checking.
-
-    Supports:
-    - User-agent matching (specific and wildcard)
-    - Allow/Disallow directives
-    - Crawl-delay directive
-    - Sitemap discovery
-    - Request-rate directive (non-standard)
-
-    Verbose Logging:
-    - [ROBOTS:FETCH] Fetching robots.txt for domain
-    - [ROBOTS:CACHE] Cache hit/miss for domain
-    - [ROBOTS:PARSE] Parsing robots.txt content
-    - [ROBOTS:MATCH] User-agent matching result
-    - [ROBOTS:CHECK] URL allowed/disallowed with rule matched
-    - [ROBOTS:DELAY] Crawl-delay extracted
-    """
-
-    async def is_allowed(self, url: str, user_agent: str) -> bool:
-        """Check if URL is allowed for given user-agent."""
-
-    async def get_crawl_delay(self, domain: str, user_agent: str) -> float | None:
-        """Get Crawl-delay directive value if specified."""
-
-    async def get_sitemaps(self, domain: str) -> list[str]:
-        """Extract Sitemap URLs from robots.txt."""
-```
-
-**Verbose Output Example:**
-```
-[ROBOTS:FETCH] Fetching robots.txt for example.com
-[ROBOTS:CACHE] Cache MISS, fetching fresh
-[ROBOTS:PARSE] Parsing robots.txt (1,245 bytes)
-  - Found 3 user-agent groups
-  - Crawl-delay: 2s for AdaptiveCrawler
-  - Sitemaps: 2 found
-[ROBOTS:MATCH] Matching user-agent 'AdaptiveCrawler'
-  - Matched group: 'AdaptiveCrawler' (exact)
-[ROBOTS:CHECK] URL /article/123
-  - Rule matched: Allow /article/
-  - Result: ALLOWED
-```
-
-#### 2.2 Rate Limiter (`rate_limiter.py`)
-
-Adaptive per-domain rate limiting.
-
-```python
-class RateLimiter:
-    """
-    Per-domain rate limiting with adaptive backoff.
-
-    Features:
-    - Configurable base delay
-    - Respects Crawl-delay from robots.txt
-    - Adaptive backoff on 429/5xx responses
-    - Per-domain state tracking
-
-    Verbose Logging:
-    - [RATE:INIT] Rate limiter initialized with config
-    - [RATE:STATE] Domain state: current_delay, last_request, backoff_count
-    - [RATE:ACQUIRE] Acquiring slot, waiting {delay}s
-    - [RATE:ADAPT] Adapting rate: {old_delay} -> {new_delay}, reason={reason}
-    - [RATE:BACKOFF] Backoff triggered: {status_code}, multiplier={mult}
-    - [RATE:RECOVER] Rate recovered to baseline
-    """
-
-    Adaptation Rules:
-    | Response Code | Action |
-    |---------------|--------|
-    | 200 OK        | Maintain rate, gradual recovery |
-    | 429 Too Many  | Backoff x2, respect Retry-After |
-    | 503 Unavailable | Backoff x2, respect Retry-After |
-    | 5xx Error     | Backoff x1.5 |
-    | Timeout       | Backoff x1.5, reduce concurrency |
-```
-
-**Verbose Output Example:**
-```
-[RATE:STATE] Domain: api.example.com
-  - Current delay: 2.0s
-  - Last request: 1.5s ago
-  - Backoff count: 1
-  - Circuit: CLOSED
-
-[RATE:ACQUIRE] Acquiring slot for api.example.com
-  - Need to wait: 0.5s (2.0s delay - 1.5s elapsed)
-  - Waiting...
-
-[RATE:ADAPT] Response 429 from api.example.com
-  - Retry-After header: 30s
-  - Old delay: 2.0s
-  - New delay: 30.0s (from Retry-After)
-  - Backoff count: 1 -> 2
-```
-
-#### 2.3 Sitemap Parser (`sitemap_parser.py`)
-
-XML sitemap processing.
-
-```python
-class SitemapParser:
-    """
-    XML sitemap parsing and URL extraction.
-
-    Supports:
-    - Standard sitemaps (urlset)
-    - Sitemap index files (sitemapindex)
-    - Gzip compressed sitemaps
-    - lastmod, changefreq, priority attributes
-
-    Verbose Logging:
-    - [SITEMAP:FETCH] Fetching sitemap from URL
-    - [SITEMAP:TYPE] Sitemap type detected (urlset/index)
-    - [SITEMAP:PARSE] Parsing sitemap, found {count} URLs
-    - [SITEMAP:INDEX] Processing sitemap index, found {count} child sitemaps
-    - [SITEMAP:URL] URL extracted with metadata
-    """
-```
-
----
-
-### 3. Legal Module (`crawler/legal/`)
-
-#### 3.1 CFAA Checker (`cfaa_checker.py`)
-
-Computer Fraud and Abuse Act authorization verification.
-
-```python
-class CFAAChecker:
-    """
-    CFAA compliance checker.
-
-    Authorization Sources (ALL must pass):
-    1. robots.txt allows access
-    2. No ToS prohibition detected
-    3. No technical access controls blocking
-    4. No prior cease & desist
-    5. Domain not on manual blocklist
-
-    Verbose Logging:
-    - [CFAA:CHECK] Checking authorization for URL
-    - [CFAA:ROBOTS] robots.txt authorization status
-    - [CFAA:TOS] Terms of Service analysis result
-    - [CFAA:BLOCK] Access blocked, reason={reason}
-    - [CFAA:AUTH] Access authorized, basis={basis}
-    """
-
-    async def is_authorized(self, url: str) -> AuthorizationResult:
-        """Check if accessing URL is legally authorized."""
-
-    async def analyze_tos(self, domain: str) -> ToSAnalysisResult:
-        """Analyze Terms of Service for crawling restrictions."""
-```
-
-**ToS Analysis Output:**
-```
-[CFAA:TOS] Analyzing Terms of Service for example.com
-  - ToS page found: /terms
-  - Analyzing content (5,230 words)
-  - Restriction patterns found: 0
-  - Bot-specific clauses: None
-  - Result: PERMITTED (no restrictions detected)
-  - Confidence: 0.85
-```
-
-#### 3.2 PII Detector (`pii_detector.py`)
-
-GDPR/CCPA compliant PII detection and handling.
-
-```python
-class PIIDetector:
-    """
-    Personally Identifiable Information detection.
-
-    Detected PII Types:
-    - Email addresses
-    - Phone numbers
-    - Physical addresses
-    - National ID numbers (SSN, etc.)
-    - Financial information
-    - Health information
-
-    Actions:
-    - redact: Replace with [REDACTED]
-    - pseudonymize: Replace with consistent pseudonyms
-    - exclude_page: Skip entire page
-    - flag_for_review: Store but flag
-
-    Verbose Logging:
-    - [PII:SCAN] Scanning content for PII
-    - [PII:DETECT] PII detected: type={type}, count={count}
-    - [PII:ACTION] Action taken: {action}
-    - [PII:REDACT] Redacted {count} occurrences
-    - [PII:ALERT] Sensitive PII alert sent
-    """
-```
-
----
-
-### 4. Extraction Module (`crawler/extraction/`)
-
-#### 4.1 Content Extractor (`content_extractor.py`)
-
-CSS selector-based content extraction.
-
-```python
-class ContentExtractor:
-    """
-    Extracts content using learned extraction strategies.
-
-    Fields Extracted:
-    - title: Page title
-    - content: Main content body
-    - metadata: author, date, tags, etc.
-    - images: Image URLs with alt text
-    - links: Outbound links
-
-    Verbose Logging:
-    - [EXTRACT:STRATEGY] Loading strategy for domain/page_type
-    - [EXTRACT:SELECTOR] Applying selector: {selector}
-    - [EXTRACT:MATCH] Selector matched {count} elements
-    - [EXTRACT:FALLBACK] Primary failed, trying fallback {n}
-    - [EXTRACT:FIELD] Field extracted: {field}={value[:50]}
-    - [EXTRACT:VALIDATE] Validation result: {valid}, confidence={conf}
-    """
-```
-
-#### 4.2 Link Extractor (`link_extractor.py`)
-
-URL discovery from HTML.
-
-```python
-class LinkExtractor:
-    """
-    Extracts and normalizes URLs from HTML.
-
-    Features:
-    - Absolute URL resolution
-    - URL normalization and canonicalization
-    - Domain filtering (allow/block lists)
-    - Duplicate detection
-
-    Verbose Logging:
-    - [LINKS:EXTRACT] Extracting links from page
-    - [LINKS:FOUND] Found {count} raw links
-    - [LINKS:NORMALIZE] Normalizing URL: {raw} -> {normalized}
-    - [LINKS:FILTER] Filtered {count} links (reason: {reason})
-    - [LINKS:DEDUP] Removed {count} duplicates
-    - [LINKS:RESULT] Yielding {count} unique links
-    """
-```
-
----
-
-### 5. Adaptive Module (`crawler/adaptive/`)
-
-See `crawler/adaptive/AGENTS.md` for detailed documentation.
-
-#### 5.1 Structure Analyzer (`structure_analyzer.py`)
-
-Rules-based DOM fingerprinting.
-
-```python
-class StructureAnalyzer:
-    """
-    Creates DOM fingerprints using rules-based analysis.
-
-    Fingerprint Components:
-    - tag_hierarchy: Nested tag structure with counts
-    - css_class_map: Class names and frequencies
-    - id_attributes: All ID attributes
-    - semantic_landmarks: HTML5 semantics and ARIA roles
-    - iframe_locations: iframe details
-    - script_signatures: JS framework detection
-    - content_regions: Main content boundaries
-    - navigation_selectors: Nav element selectors
-    - pagination_pattern: Pagination detection
-
-    Verbose Logging:
-    - [STRUCTURE:ANALYZE] Analyzing HTML ({size} bytes)
-    - [STRUCTURE:TAGS] Tag distribution: {top_5_tags}
-    - [STRUCTURE:CLASSES] Found {count} unique CSS classes
-    - [STRUCTURE:LANDMARKS] Semantic landmarks: {landmarks}
-    - [STRUCTURE:IFRAMES] Found {count} iframes
-    - [STRUCTURE:SCRIPTS] Framework detected: {framework}
-    - [STRUCTURE:REGIONS] Content regions identified: {regions}
-    - [STRUCTURE:HASH] Structure hash: {hash}
-    """
-```
-
-#### 5.2 Change Detector (`change_detector.py`)
-
-Structure comparison and change classification.
-
-```python
-class ChangeDetector:
-    """
-    Detects and classifies structure changes.
-
-    Change Classification:
-    - COSMETIC (>95% similar): Minor style changes
-    - MINOR (85-95%): Non-breaking layout adjustments
-    - MODERATE (70-85%): Significant changes, may need adaptation
-    - BREAKING (<70%): Major redesign, requires re-learning
-
-    Change Types (14 types):
-    - iframe_added, iframe_removed, iframe_relocated, iframe_resized
-    - tag_renamed, class_renamed, id_changed
-    - structure_reorganized, content_relocated
-    - script_added, script_removed, script_modified
-    - url_pattern_changed, pagination_changed
-    - minor_layout_shift, major_redesign
-
-    Verbose Logging:
-    - [CHANGE:COMPARE] Comparing structures (v{old} vs v{new})
-    - [CHANGE:SIMILARITY] Overall similarity: {score}
-    - [CHANGE:CLASSIFY] Classification: {type}
-    - [CHANGE:DETAILS] Changes detected:
-        - {change_type}: {description}
-    - [CHANGE:BREAKING] Breaking change: {yes/no}
-    - [CHANGE:FIELDS] Affected fields: {fields}
-    """
-```
-
-#### 5.3 Strategy Learner (`strategy_learner.py`)
-
-CSS selector inference and adaptation.
-
-```python
-class StrategyLearner:
-    """
-    Learns extraction strategies from page structure.
-
-    Learning Priority:
-    1. Semantic HTML: <article>, <main>, <h1>
-    2. ARIA landmarks: role="main", aria-label
-    3. Schema.org: itemtype, itemprop
-    4. Common patterns: .content, .article, .post
-    5. Structural heuristics: largest text block
-
-    Verbose Logging:
-    - [LEARN:START] Learning strategy for {domain}/{page_type}
-    - [LEARN:SEMANTIC] Checking semantic HTML elements
-    - [LEARN:ARIA] Checking ARIA landmarks
-    - [LEARN:SCHEMA] Checking Schema.org markup
-    - [LEARN:HEURISTIC] Applying heuristics
-    - [LEARN:CANDIDATE] Candidate selector: {selector}, confidence={conf}
-    - [LEARN:SELECT] Selected: {field} -> {selector} (confidence={conf})
-    - [LEARN:FALLBACK] Generated {count} fallback selectors
-    - [LEARN:COMPLETE] Strategy learned with {field_count} fields
-    """
-```
-
----
-
-### 6. ML Module (`crawler/ml/`)
-
-See `crawler/ml/AGENTS.md` for detailed documentation.
-
-#### 6.1 Embeddings (`embeddings.py`)
-
-ML models and Ollama Cloud LLM integration.
-
-```python
-class StructureEmbeddingModel:
-    """
-    Generates semantic embeddings for page structures.
-
-    Model: all-MiniLM-L6-v2 (384 dimensions)
-
-    Verbose Logging:
-    - [EMBED:INIT] Model loaded: {model_name}
-    - [EMBED:DESCRIBE] Generating description for structure
-    - [EMBED:ENCODE] Encoding description to embedding
-    - [EMBED:DIMS] Embedding shape: {dims}
-    - [EMBED:NORM] Embedding L2 norm: {norm}
-    """
-
-class LLMDescriptionGenerator:
-    """
-    Generates structure descriptions using Ollama Cloud.
-
-    Provider: Ollama Cloud only
-    Model: Configurable (default: gemma3:12b)
-    Endpoint: https://ollama.com/api/chat
-
-    Verbose Logging:
-    - [LLM:INIT] Ollama Cloud initialized, model={model}
-    - [LLM:PROMPT] Generating prompt for structure
-    - [LLM:REQUEST] Sending request to Ollama Cloud API
-    - [LLM:RESPONSE] Response received ({length} chars)
-    - [LLM:DESCRIPTION] Generated description: {description}
-    """
-
-class MLChangeDetector:
-    """
-    ML-based change detection using embeddings.
-
-    Features:
-    - Cosine similarity between embeddings
-    - Site baseline drift detection
-    - Change impact classification
-
-    Verbose Logging:
-    - [ML:CHANGE] Comparing structures via embeddings
-    - [ML:SIMILARITY] Cosine similarity: {score}
-    - [ML:THRESHOLD] Breaking threshold: {threshold}
-    - [ML:BREAKING] Is breaking: {yes/no}
-    - [ML:IMPACT] Predicted impact: {impact}
-    """
-
-class StructureClassifier:
-    """
-    Page type classification using ML models.
-
-    Backends: LogisticRegression, XGBoost, LightGBM
-
-    Verbose Logging:
-    - [CLASSIFY:INIT] Classifier loaded: {backend}
-    - [CLASSIFY:FEATURES] Extracting features from structure
-    - [CLASSIFY:PREDICT] Predicting page type
-    - [CLASSIFY:RESULT] Prediction: {type}, confidence={conf}
-    """
-```
-
----
-
-### 7. Storage Module (`crawler/storage/`)
-
-#### 7.1 Structure Store (`structure_store.py`)
-
-Basic Redis-backed structure storage.
-
-```python
-class StructureStore:
-    """
-    Redis storage for page structures and strategies.
-
-    Redis Key Patterns:
-    - crawler:structure:{domain}:{page_type}:{variant_id}
-    - crawler:strategy:{domain}:{page_type}:{variant_id}
-    - crawler:variants:{domain}:{page_type}
-    - crawler:changes:{domain}:{page_type}
-
-    Verbose Logging:
-    - [STORE:GET] Getting structure for {domain}/{page_type}
-    - [STORE:HIT] Cache HIT, version={version}
-    - [STORE:MISS] Cache MISS
-    - [STORE:SAVE] Saving structure, version={version}
-    - [STORE:UPDATE] Updating structure, {old_version} -> {new_version}
-    - [STORE:VARIANT] Variant tracking: {variant_id}
-    - [STORE:HISTORY] Storing in history, keeping {max_versions} versions
-    """
-```
-
-#### 7.2 LLM Structure Store (`structure_llm_store.py`)
-
-Enhanced storage with Ollama Cloud descriptions and embeddings.
-
-```python
-class LLMStructureStore:
-    """
-    Structure storage enhanced with Ollama Cloud LLM descriptions.
-
-    Additional Data Stored:
-    - LLM-generated description
-    - Semantic embedding vector
-    - Description generation timestamp
-
-    Redis Key Patterns:
-    - crawler:structure_llm:{domain}:{page_type}:{variant_id}
-    - crawler:embedding:{domain}:{page_type}:{variant_id}
-
-    Verbose Logging:
-    - [LLM_STORE:SAVE] Saving structure with LLM description
-    - [LLM_STORE:DESCRIBE] Generating LLM description via Ollama Cloud
-    - [LLM_STORE:EMBED] Generating embedding from description
-    - [LLM_STORE:GET] Getting structure with description
-    - [LLM_STORE:COMPARE] Comparing via embeddings, similarity={score}
-    """
-```
-
-#### 7.3 URL Store (`url_store.py`)
-
-URL frontier and visited tracking.
-
-```python
-class URLStore:
-    """
-    Redis-backed URL frontier management.
-
-    Features:
-    - Priority queue (sorted set)
-    - Visited URL tracking (set)
-    - In-progress tracking for crash recovery
-
-    Redis Key Patterns:
-    - crawler:url_frontier:{priority}
-    - crawler:url_visited
-    - crawler:url_in_progress
-
-    Verbose Logging:
-    - [URL:ADD] Adding URL to frontier, priority={priority}
-    - [URL:SKIP] Skipping URL (visited/duplicate)
-    - [URL:NEXT] Popping next URL from frontier
-    - [URL:PROGRESS] Marking URL in-progress
-    - [URL:COMPLETE] Marking URL complete
-    - [URL:STATS] Frontier size={size}, visited={visited}
-    """
-```
-
-#### 7.4 Robots Cache (`robots_cache.py`)
-
-Cached robots.txt with TTL.
-
-```python
-class RobotsCache:
-    """
-    Redis-cached robots.txt files.
-
-    Features:
-    - Configurable TTL (default: 24 hours)
-    - Automatic refresh on expiry
-    - Fallback handling for fetch failures
-
-    Redis Key Pattern:
-    - crawler:robots:{domain}
-
-    Verbose Logging:
-    - [ROBOTS_CACHE:GET] Getting robots.txt for {domain}
-    - [ROBOTS_CACHE:HIT] Cache HIT, age={age}s
-    - [ROBOTS_CACHE:MISS] Cache MISS, fetching fresh
-    - [ROBOTS_CACHE:STORE] Storing robots.txt, TTL={ttl}s
-    - [ROBOTS_CACHE:EXPIRE] Cache expired for {domain}
-    """
-```
-
----
-
-### 8. Alerting Module (`crawler/alerting/`)
-
-#### 8.1 Alerter (`alerter.py`)
-
-Change and failure notifications.
-
-```python
-class Alerter:
-    """
-    Alert management for significant events.
-
-    Alert Types:
-    - CRITICAL: Extraction completely failing
-    - WARNING: Major structure change detected
-    - INFO: New page type discovered
-
-    Channels:
-    - Slack webhook
-    - Email (SMTP)
-    - Generic webhook
-
-    Verbose Logging:
-    - [ALERT:TRIGGER] Alert triggered: {type}, severity={severity}
-    - [ALERT:THROTTLE] Alert throttled (sent {ago}s ago)
-    - [ALERT:SEND] Sending alert to {channel}
-    - [ALERT:SUCCESS] Alert sent successfully
-    - [ALERT:FAIL] Alert send failed: {error}
-    """
-```
-
----
-
-### 9. Configuration (`crawler/config.py`)
-
-Comprehensive configuration dataclasses.
-
-```python
-# Main configuration structure
-CrawlerSettings          # Environment variable loading (CRAWLER_* prefix)
-CrawlConfig              # Main YAML configuration
-├── RateLimitConfig      # Rate limiting settings
-├── GDPRConfig           # GDPR compliance settings
-├── CFAAConfig           # CFAA compliance settings
-├── CCPAConfig           # CCPA compliance settings
-├── PIIHandlingConfig    # PII detection settings
-├── StructureStoreConfig # Storage settings
-│   └── LLMConfig        # Ollama Cloud settings
-├── SecurityConfig       # Security constraints
-└── PolitenessConfig     # Advanced politeness
-
-# Verbose logging config
-@dataclass
-class VerboseConfig:
-    """
-    Verbose logging configuration.
-
-    Levels:
-    - 0: Errors only
-    - 1: Warnings + Errors
-    - 2: Info + Warnings + Errors
-    - 3: Debug (all verbose logging)
-
-    Module-specific overrides available.
-    """
-    level: int = 2
-    modules: dict[str, int] = field(default_factory=dict)
-    format: str = "structured"  # or "plain"
-    include_timestamp: bool = True
-    include_context: bool = True
-```
-
----
-
-## Ollama Cloud Integration
-
-### Configuration
+### config.example.yaml
 
 ```yaml
-# config.yaml
-structure_store:
-  store_type: llm
+# Adaptive Fingerprint Configuration
 
-  llm:
-    provider: ollama-cloud
-    model: gemma3:12b  # or llama3.2, mistral, etc.
-    api_key: ${OLLAMA_CLOUD_API_KEY}
+# Fingerprinting mode: "rules", "ml", or "adaptive"
+fingerprinting:
+  mode: adaptive
 
-    # Request settings
-    timeout: 30
-    max_retries: 3
+  # Adaptive mode settings
+  adaptive:
+    class_change_threshold: 0.15      # Trigger ML if >15% classes changed
+    rules_uncertainty_threshold: 0.80  # Trigger ML if rules < 0.80
+    cache_ml_results: true
 
-    # Generation settings
-    temperature: 0.3
-    max_tokens: 500
+  # Change classification thresholds
+  thresholds:
+    cosmetic: 0.95    # > 0.95 = cosmetic change
+    minor: 0.85       # 0.85-0.95 = minor change
+    moderate: 0.70    # 0.70-0.85 = moderate change
+    breaking: 0.70    # < 0.70 = breaking change
+
+# Ollama Cloud LLM settings
+ollama_cloud:
+  enabled: true
+  model: "gemma3:12b"
+  timeout: 30
+  max_retries: 3
+  temperature: 0.3
+  max_tokens: 500
+
+# Embedding model settings
+embeddings:
+  model: "all-MiniLM-L6-v2"
+  cache_embeddings: true
+
+# Redis storage
+redis:
+  url: "redis://localhost:6379/0"
+  key_prefix: "fingerprint"
+  ttl_seconds: 604800  # 7 days
+  max_versions: 10
+
+# HTTP fetching
+http:
+  user_agent: "AdaptiveFingerprint/1.0"
+  timeout: 30
+  max_retries: 3
+  respect_robots_txt: true
+
+# Verbose logging
+verbose:
+  enabled: true
+  level: 2  # 0=errors, 1=warnings, 2=info, 3=debug
+  format: "structured"  # "structured" or "plain"
+  include_timestamp: true
 ```
 
-### Environment Variables
+### .env.example
 
 ```bash
 # Required for Ollama Cloud
-export OLLAMA_CLOUD_API_KEY="your-api-key"
+OLLAMA_CLOUD_API_KEY=your-api-key-here
 
 # Optional overrides
-export OLLAMA_CLOUD_MODEL="gemma3:12b"
-export OLLAMA_CLOUD_TIMEOUT="30"
+FINGERPRINT_MODE=adaptive
+FINGERPRINT_VERBOSE=2
+REDIS_URL=redis://localhost:6379/0
 ```
 
-### API Integration
+---
+
+## Core Data Models
+
+### fingerprint/models.py
 
 ```python
-class OllamaCloudClient:
+"""
+Core data models for the fingerprinting system.
+
+All models use dataclasses for clean, type-safe data structures.
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Any
+
+
+class FingerprintMode(Enum):
+    """Fingerprinting mode selection."""
+    RULES = "rules"
+    ML = "ml"
+    ADAPTIVE = "adaptive"
+
+
+class ChangeClassification(Enum):
+    """Change severity classification."""
+    COSMETIC = "cosmetic"    # > 0.95 similarity
+    MINOR = "minor"          # 0.85 - 0.95
+    MODERATE = "moderate"    # 0.70 - 0.85
+    BREAKING = "breaking"    # < 0.70
+
+
+class ChangeType(Enum):
+    """Specific types of detected changes."""
+    # Tag/Class changes
+    TAG_ADDED = "tag_added"
+    TAG_REMOVED = "tag_removed"
+    CLASS_RENAMED = "class_renamed"
+    CLASS_ADDED = "class_added"
+    CLASS_REMOVED = "class_removed"
+    ID_CHANGED = "id_changed"
+
+    # Structural changes
+    STRUCTURE_REORGANIZED = "structure_reorganized"
+    CONTENT_RELOCATED = "content_relocated"
+    LANDMARK_CHANGED = "landmark_changed"
+
+    # Script/Framework changes
+    SCRIPT_ADDED = "script_added"
+    SCRIPT_REMOVED = "script_removed"
+    FRAMEWORK_CHANGED = "framework_changed"
+
+    # Navigation changes
+    NAVIGATION_CHANGED = "navigation_changed"
+    PAGINATION_CHANGED = "pagination_changed"
+
+    # Overall
+    MINOR_LAYOUT_SHIFT = "minor_layout_shift"
+    MAJOR_REDESIGN = "major_redesign"
+
+
+@dataclass
+class TagHierarchy:
+    """Tag structure analysis."""
+    tag_counts: dict[str, int]
+    depth_distribution: dict[int, int]
+    parent_child_pairs: dict[str, int]
+    max_depth: int = 0
+
+
+@dataclass
+class ContentRegion:
+    """Identified content extraction zone."""
+    name: str
+    primary_selector: str
+    fallback_selectors: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+
+
+@dataclass
+class PageStructure:
     """
-    Ollama Cloud API client.
+    Complete fingerprint of a page's DOM structure.
 
-    Endpoint: https://ollama.com/api/chat
-    Authentication: Bearer token in Authorization header
-
-    Request Format:
-    {
-        "model": "gemma3:12b",
-        "messages": [{"role": "user", "content": "..."}],
-        "stream": false,
-        "options": {
-            "num_predict": 500,
-            "temperature": 0.3
-        }
-    }
-
-    Response Format:
-    {
-        "message": {
-            "role": "assistant",
-            "content": "Generated description..."
-        }
-    }
-
-    Verbose Logging:
-    - [OLLAMA:INIT] Client initialized, model={model}
-    - [OLLAMA:REQUEST] Sending request, prompt_length={length}
-    - [OLLAMA:RESPONSE] Response received, content_length={length}
-    - [OLLAMA:ERROR] API error: {status_code}, {error}
-    - [OLLAMA:RETRY] Retrying request, attempt={n}/{max}
+    This is the primary data model for storing and comparing page structures.
     """
+    # Identification
+    domain: str
+    page_type: str
+    url_pattern: str = ""
+    variant_id: str = "default"
+
+    # Tag structure
+    tag_hierarchy: TagHierarchy | None = None
+
+    # CSS analysis
+    css_class_map: dict[str, int] = field(default_factory=dict)
+    id_attributes: set[str] = field(default_factory=set)
+
+    # Semantic structure
+    semantic_landmarks: dict[str, str] = field(default_factory=dict)
+
+    # Content regions
+    content_regions: list[ContentRegion] = field(default_factory=list)
+    navigation_selectors: list[str] = field(default_factory=list)
+
+    # Script analysis
+    script_signatures: list[str] = field(default_factory=list)
+    detected_framework: str | None = None
+
+    # Metadata
+    captured_at: datetime = field(default_factory=datetime.utcnow)
+    version: int = 1
+    content_hash: str = ""
+
+    # Description (for ML mode)
+    description: str = ""
+
+
+@dataclass
+class StructureEmbedding:
+    """Embedding representation of a page structure."""
+    domain: str
+    page_type: str
+    variant_id: str = "default"
+
+    # Embedding vector (numpy array stored as list for serialization)
+    vector: list[float] = field(default_factory=list)
+    dimensions: int = 384
+
+    # Metadata
+    model_name: str = "all-MiniLM-L6-v2"
+    description: str = ""
+    generated_at: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class StructureChange:
+    """Single detected change between structures."""
+    change_type: ChangeType
+    affected_components: list[str] = field(default_factory=list)
+
+    # Details
+    old_value: str | None = None
+    new_value: str | None = None
+    location: str = ""
+
+    # Impact
+    breaking: bool = False
+    fields_affected: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+
+    # Documentation
+    reason: str = ""
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class EscalationTrigger:
+    """Trigger that caused adaptive mode to escalate to ML."""
+    name: str
+    reason: str
+    threshold: float | None = None
+    actual_value: float | None = None
+
+
+@dataclass
+class ChangeAnalysis:
+    """
+    Complete analysis of changes between structures.
+
+    Contains the result from ONE fingerprinting mode (not combined).
+    """
+    # Similarity (from one mode)
+    similarity: float
+    mode_used: FingerprintMode
+
+    # Classification
+    classification: ChangeClassification
+    breaking: bool
+
+    # Detailed changes
+    changes: list[StructureChange] = field(default_factory=list)
+
+    # Impact assessment
+    fields_affected: dict[str, str] = field(default_factory=dict)
+    can_auto_adapt: bool = False
+    adaptation_confidence: float = 0.0
+
+    # Documentation
+    reason: str = ""
+
+    # Adaptive mode details
+    escalated: bool = False
+    escalation_triggers: list[EscalationTrigger] = field(default_factory=list)
+
+    # Timing
+    duration_ms: float = 0.0
+
+
+@dataclass
+class SelectorRule:
+    """CSS selector extraction rule."""
+    primary: str
+    fallbacks: list[str] = field(default_factory=list)
+    extraction_method: str = "text"  # "text", "html", "attribute"
+    attribute_name: str | None = None
+    post_processors: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+
+
+@dataclass
+class ExtractionStrategy:
+    """Rules for extracting content from a page type."""
+    domain: str
+    page_type: str
+    version: int = 1
+
+    # Extraction rules
+    title: SelectorRule | None = None
+    content: SelectorRule | None = None
+    metadata: dict[str, SelectorRule] = field(default_factory=dict)
+
+    # Learning metadata
+    learned_at: datetime = field(default_factory=datetime.utcnow)
+    learning_source: str = "initial"  # "initial", "adaptation", "manual"
+    confidence_scores: dict[str, float] = field(default_factory=dict)
 ```
 
-### Usage Example
+---
+
+## Configuration Module
+
+### fingerprint/config.py
 
 ```python
-from crawler.ml.embeddings import LLMDescriptionGenerator
+"""
+Configuration management using Pydantic settings.
 
-# Initialize with Ollama Cloud
-generator = LLMDescriptionGenerator(
-    provider="ollama-cloud",
-    model="gemma3:12b",
-    api_key=os.environ["OLLAMA_CLOUD_API_KEY"],
-    verbose=True
-)
+Loads configuration from:
+1. Environment variables (FINGERPRINT_* prefix)
+2. YAML configuration file
+3. Default values
+"""
 
-# Generate description for a structure
-description = await generator.generate(page_structure)
-# Output:
-# [LLM:INIT] Ollama Cloud initialized, model=gemma3:12b
-# [LLM:PROMPT] Generating prompt for structure (domain=example.com)
-# [LLM:REQUEST] Sending request to Ollama Cloud API
-# [LLM:RESPONSE] Response received (245 chars)
-# [LLM:DESCRIPTION] Generated description: "News article page with semantic
-#   HTML structure. Main content in <article> element with clear heading
-#   hierarchy. Sidebar navigation and footer present."
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class FingerprintSettings(BaseSettings):
+    """Environment-based settings with FINGERPRINT_ prefix."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="FINGERPRINT_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Core settings
+    mode: str = "adaptive"
+    verbose: int = 2
+
+    # Redis
+    redis_url: str = "redis://localhost:6379/0"
+
+    # Ollama Cloud
+    ollama_cloud_api_key: str = ""
+    ollama_cloud_model: str = "gemma3:12b"
+    ollama_cloud_timeout: int = 30
+
+    # Embedding model
+    embedding_model: str = "all-MiniLM-L6-v2"
+
+
+@dataclass
+class AdaptiveConfig:
+    """Adaptive mode configuration."""
+    class_change_threshold: float = 0.15
+    rules_uncertainty_threshold: float = 0.80
+    cache_ml_results: bool = True
+
+
+@dataclass
+class ThresholdsConfig:
+    """Change classification thresholds."""
+    cosmetic: float = 0.95
+    minor: float = 0.85
+    moderate: float = 0.70
+    breaking: float = 0.70
+
+
+@dataclass
+class OllamaCloudConfig:
+    """Ollama Cloud API configuration."""
+    enabled: bool = True
+    api_key: str = ""
+    model: str = "gemma3:12b"
+    timeout: int = 30
+    max_retries: int = 3
+    temperature: float = 0.3
+    max_tokens: int = 500
+
+
+@dataclass
+class EmbeddingsConfig:
+    """Embedding model configuration."""
+    model: str = "all-MiniLM-L6-v2"
+    cache_embeddings: bool = True
+
+
+@dataclass
+class RedisConfig:
+    """Redis storage configuration."""
+    url: str = "redis://localhost:6379/0"
+    key_prefix: str = "fingerprint"
+    ttl_seconds: int = 604800  # 7 days
+    max_versions: int = 10
+
+
+@dataclass
+class HttpConfig:
+    """HTTP client configuration."""
+    user_agent: str = "AdaptiveFingerprint/1.0"
+    timeout: int = 30
+    max_retries: int = 3
+    respect_robots_txt: bool = True
+
+
+@dataclass
+class VerboseConfig:
+    """Verbose logging configuration."""
+    enabled: bool = True
+    level: int = 2  # 0=errors, 1=warnings, 2=info, 3=debug
+    format: str = "structured"
+    include_timestamp: bool = True
+
+
+@dataclass
+class Config:
+    """Complete application configuration."""
+    mode: str = "adaptive"
+    adaptive: AdaptiveConfig = field(default_factory=AdaptiveConfig)
+    thresholds: ThresholdsConfig = field(default_factory=ThresholdsConfig)
+    ollama_cloud: OllamaCloudConfig = field(default_factory=OllamaCloudConfig)
+    embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
+    redis: RedisConfig = field(default_factory=RedisConfig)
+    http: HttpConfig = field(default_factory=HttpConfig)
+    verbose: VerboseConfig = field(default_factory=VerboseConfig)
+
+
+def load_config(config_path: Path | None = None) -> Config:
+    """
+    Load configuration from file and environment.
+
+    Priority: Environment > YAML file > Defaults
+    """
+    config = Config()
+
+    # Load from YAML if provided
+    if config_path and config_path.exists():
+        with open(config_path) as f:
+            yaml_config = yaml.safe_load(f)
+            if yaml_config:
+                config = _merge_yaml_config(config, yaml_config)
+
+    # Override with environment variables
+    env_settings = FingerprintSettings()
+    config.mode = env_settings.mode
+    config.verbose.level = env_settings.verbose
+    config.redis.url = env_settings.redis_url
+    config.ollama_cloud.api_key = env_settings.ollama_cloud_api_key
+    config.ollama_cloud.model = env_settings.ollama_cloud_model
+    config.embeddings.model = env_settings.embedding_model
+
+    return config
+
+
+def _merge_yaml_config(config: Config, yaml_data: dict[str, Any]) -> Config:
+    """Merge YAML configuration into Config object."""
+    if "fingerprinting" in yaml_data:
+        fp = yaml_data["fingerprinting"]
+        config.mode = fp.get("mode", config.mode)
+
+        if "adaptive" in fp:
+            config.adaptive.class_change_threshold = fp["adaptive"].get(
+                "class_change_threshold", config.adaptive.class_change_threshold
+            )
+            config.adaptive.rules_uncertainty_threshold = fp["adaptive"].get(
+                "rules_uncertainty_threshold", config.adaptive.rules_uncertainty_threshold
+            )
+
+        if "thresholds" in fp:
+            config.thresholds.cosmetic = fp["thresholds"].get("cosmetic", config.thresholds.cosmetic)
+            config.thresholds.minor = fp["thresholds"].get("minor", config.thresholds.minor)
+            config.thresholds.moderate = fp["thresholds"].get("moderate", config.thresholds.moderate)
+
+    if "ollama_cloud" in yaml_data:
+        oc = yaml_data["ollama_cloud"]
+        config.ollama_cloud.enabled = oc.get("enabled", config.ollama_cloud.enabled)
+        config.ollama_cloud.model = oc.get("model", config.ollama_cloud.model)
+        config.ollama_cloud.timeout = oc.get("timeout", config.ollama_cloud.timeout)
+
+    if "redis" in yaml_data:
+        r = yaml_data["redis"]
+        config.redis.url = r.get("url", config.redis.url)
+        config.redis.key_prefix = r.get("key_prefix", config.redis.key_prefix)
+        config.redis.ttl_seconds = r.get("ttl_seconds", config.redis.ttl_seconds)
+
+    if "verbose" in yaml_data:
+        v = yaml_data["verbose"]
+        config.verbose.enabled = v.get("enabled", config.verbose.enabled)
+        config.verbose.level = v.get("level", config.verbose.level)
+
+    return config
+```
+
+---
+
+## Exceptions
+
+### fingerprint/exceptions.py
+
+```python
+"""
+Custom exception hierarchy for the fingerprinting system.
+
+All exceptions inherit from FingerprintError for easy catching.
+"""
+
+
+class FingerprintError(Exception):
+    """Base exception for all fingerprinting errors."""
+    pass
+
+
+# Analysis errors
+class AnalysisError(FingerprintError):
+    """Error during structure analysis."""
+    pass
+
+
+class InvalidHTMLError(AnalysisError):
+    """HTML content is invalid or unparseable."""
+    pass
+
+
+class EmptyContentError(AnalysisError):
+    """Content is empty or contains no meaningful structure."""
+    pass
+
+
+# Change detection errors
+class ChangeDetectionError(FingerprintError):
+    """Error during change detection."""
+    pass
+
+
+class IncompatibleStructuresError(ChangeDetectionError):
+    """Structures cannot be compared (different domains/types)."""
+    pass
+
+
+# ML errors
+class MLError(FingerprintError):
+    """Error in ML operations."""
+    pass
+
+
+class EmbeddingError(MLError):
+    """Error generating embeddings."""
+    pass
+
+
+class ModelLoadError(MLError):
+    """Error loading ML model."""
+    pass
+
+
+# Ollama Cloud errors
+class OllamaCloudError(FingerprintError):
+    """Error with Ollama Cloud API."""
+    pass
+
+
+class OllamaAuthError(OllamaCloudError):
+    """Authentication failed with Ollama Cloud."""
+    pass
+
+
+class OllamaTimeoutError(OllamaCloudError):
+    """Request to Ollama Cloud timed out."""
+    pass
+
+
+class OllamaRateLimitError(OllamaCloudError):
+    """Rate limited by Ollama Cloud."""
+    pass
+
+
+# Storage errors
+class StorageError(FingerprintError):
+    """Error in storage operations."""
+    pass
+
+
+class RedisConnectionError(StorageError):
+    """Cannot connect to Redis."""
+    pass
+
+
+class SerializationError(StorageError):
+    """Error serializing/deserializing data."""
+    pass
+
+
+# HTTP errors
+class FetchError(FingerprintError):
+    """Error fetching URL."""
+    pass
+
+
+class HTTPTimeoutError(FetchError):
+    """HTTP request timed out."""
+    pass
+
+
+class HTTPStatusError(FetchError):
+    """HTTP request returned error status."""
+    def __init__(self, status_code: int, message: str = ""):
+        self.status_code = status_code
+        super().__init__(f"HTTP {status_code}: {message}")
+```
+
+---
+
+## Verbose Logging System
+
+### fingerprint/core/verbose.py
+
+```python
+"""
+Verbose logging system with structured output.
+
+All modules use this for consistent logging format:
+[TIMESTAMP] [MODULE:OPERATION] Message
+  - detail_1
+  - detail_2
+"""
+
+from datetime import datetime
+from typing import Any
+
+from rich.console import Console
+
+from fingerprint.config import VerboseConfig
+
+
+class VerboseLogger:
+    """
+    Structured verbose logger.
+
+    Usage:
+        logger = VerboseLogger(config.verbose)
+        logger.log("MODULE", "OPERATION", "Message", details={"key": "value"})
+    """
+
+    def __init__(self, config: VerboseConfig):
+        self.config = config
+        self.console = Console()
+        self._enabled = config.enabled
+        self._level = config.level
+
+    def log(
+        self,
+        module: str,
+        operation: str,
+        message: str,
+        level: int = 2,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Log a verbose message.
+
+        Args:
+            module: Module name (e.g., "STRUCTURE", "ML", "ADAPTIVE")
+            operation: Operation name (e.g., "ANALYZE", "COMPARE", "ESCALATE")
+            message: Main message
+            level: Log level (0=error, 1=warn, 2=info, 3=debug)
+            details: Optional dict of details to display
+        """
+        if not self._enabled or level > self._level:
+            return
+
+        # Build log line
+        prefix = f"[{module}:{operation}]"
+
+        if self.config.include_timestamp:
+            timestamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            line = f"[{timestamp}] {prefix} {message}"
+        else:
+            line = f"{prefix} {message}"
+
+        # Output
+        if self.config.format == "structured":
+            self._output_structured(line, details, level)
+        else:
+            self._output_plain(line, details)
+
+    def _output_structured(
+        self,
+        line: str,
+        details: dict[str, Any] | None,
+        level: int,
+    ) -> None:
+        """Output with rich formatting."""
+        # Color based on level
+        colors = {0: "red", 1: "yellow", 2: "cyan", 3: "dim"}
+        color = colors.get(level, "white")
+
+        self.console.print(f"[{color}]{line}[/{color}]")
+
+        if details:
+            for key, value in details.items():
+                self.console.print(f"  [dim]- {key}: {value}[/dim]")
+
+    def _output_plain(
+        self,
+        line: str,
+        details: dict[str, Any] | None,
+    ) -> None:
+        """Output plain text."""
+        print(line)
+        if details:
+            for key, value in details.items():
+                print(f"  - {key}: {value}")
+
+    # Convenience methods
+    def error(self, module: str, operation: str, message: str, **details: Any) -> None:
+        self.log(module, operation, message, level=0, details=details or None)
+
+    def warn(self, module: str, operation: str, message: str, **details: Any) -> None:
+        self.log(module, operation, message, level=1, details=details or None)
+
+    def info(self, module: str, operation: str, message: str, **details: Any) -> None:
+        self.log(module, operation, message, level=2, details=details or None)
+
+    def debug(self, module: str, operation: str, message: str, **details: Any) -> None:
+        self.log(module, operation, message, level=3, details=details or None)
+
+
+# Global logger instance (set by main application)
+_logger: VerboseLogger | None = None
+
+
+def get_logger() -> VerboseLogger:
+    """Get the global verbose logger."""
+    global _logger
+    if _logger is None:
+        # Create default logger
+        _logger = VerboseLogger(VerboseConfig())
+    return _logger
+
+
+def set_logger(logger: VerboseLogger) -> None:
+    """Set the global verbose logger."""
+    global _logger
+    _logger = logger
+```
+
+---
+
+## CLI Entry Point
+
+### fingerprint/__main__.py
+
+```python
+"""
+CLI entry point for the fingerprinting system.
+
+Usage:
+    fingerprint analyze --url https://example.com
+    fingerprint compare --url https://example.com --stored-version 1
+    fingerprint describe --url https://example.com
+"""
+
+import asyncio
+from pathlib import Path
+
+import click
+
+from fingerprint.config import load_config
+from fingerprint.core.analyzer import StructureAnalyzer
+from fingerprint.core.verbose import VerboseLogger, set_logger
+
+
+@click.group()
+@click.option("--config", "-c", type=click.Path(exists=True), help="Config file path")
+@click.option("--verbose", "-v", count=True, help="Increase verbosity")
+@click.pass_context
+def main(ctx: click.Context, config: str | None, verbose: int) -> None:
+    """Adaptive Structure Fingerprinting System."""
+    ctx.ensure_object(dict)
+
+    # Load configuration
+    config_path = Path(config) if config else None
+    ctx.obj["config"] = load_config(config_path)
+
+    # Override verbose level
+    if verbose:
+        ctx.obj["config"].verbose.level = min(verbose + 1, 3)
+
+    # Set up logger
+    logger = VerboseLogger(ctx.obj["config"].verbose)
+    set_logger(logger)
+
+
+@main.command()
+@click.option("--url", "-u", required=True, help="URL to analyze")
+@click.option("--output", "-o", type=click.Path(), help="Output file path")
+@click.pass_context
+def analyze(ctx: click.Context, url: str, output: str | None) -> None:
+    """Analyze a URL and generate structure fingerprint."""
+    config = ctx.obj["config"]
+
+    async def run():
+        analyzer = StructureAnalyzer(config)
+        result = await analyzer.analyze_url(url)
+
+        if output:
+            # Save to file
+            import json
+            with open(output, "w") as f:
+                json.dump(result.__dict__, f, indent=2, default=str)
+            click.echo(f"Saved to {output}")
+        else:
+            # Print summary
+            click.echo(f"Domain: {result.domain}")
+            click.echo(f"Page type: {result.page_type}")
+            click.echo(f"Tags: {len(result.tag_hierarchy.tag_counts) if result.tag_hierarchy else 0}")
+            click.echo(f"Classes: {len(result.css_class_map)}")
+            click.echo(f"Landmarks: {len(result.semantic_landmarks)}")
+
+    asyncio.run(run())
+
+
+@main.command()
+@click.option("--url", "-u", required=True, help="URL to compare")
+@click.option("--mode", "-m", type=click.Choice(["rules", "ml", "adaptive"]), default="adaptive")
+@click.pass_context
+def compare(ctx: click.Context, url: str, mode: str) -> None:
+    """Compare current structure with stored version."""
+    config = ctx.obj["config"]
+    config.mode = mode
+
+    async def run():
+        analyzer = StructureAnalyzer(config)
+        result = await analyzer.compare_with_stored(url)
+
+        click.echo(f"Mode: {result.mode_used.value}")
+        click.echo(f"Similarity: {result.similarity:.3f}")
+        click.echo(f"Classification: {result.classification.value}")
+        click.echo(f"Breaking: {result.breaking}")
+
+        if result.escalated:
+            click.echo(f"Escalated: Yes")
+            for trigger in result.escalation_triggers:
+                click.echo(f"  - {trigger.name}: {trigger.reason}")
+
+    asyncio.run(run())
+
+
+@main.command()
+@click.option("--url", "-u", required=True, help="URL to describe")
+@click.pass_context
+def describe(ctx: click.Context, url: str) -> None:
+    """Generate LLM description of page structure."""
+    config = ctx.obj["config"]
+
+    async def run():
+        analyzer = StructureAnalyzer(config)
+        structure = await analyzer.analyze_url(url)
+        description = await analyzer.generate_description(structure)
+
+        click.echo("Description:")
+        click.echo(description)
+
+    asyncio.run(run())
+
+
+if __name__ == "__main__":
+    main()
 ```
 
 ---
 
 ## Fingerprinting Modes
 
-The crawler provides three independent fingerprinting modes. Each mode operates independently - they are **not combined** into a weighted score. You select one mode based on your use case.
+The system provides three independent fingerprinting modes. Each mode operates independently - they are **not combined**.
 
-### Mode Overview
-
-| Mode | Latency | Best For | Trade-offs |
-|------|---------|----------|------------|
-| **Rules** | ~15ms | Stable sites, high throughput | Sensitive to class renames |
-| **ML** | ~200ms | Sites with frequent CSS changes | Requires embedding model, slower |
-| **Adaptive** | ~15-200ms | Unknown sites, mixed environments | Slightly more complex logic |
-
-### Configuration
-
-```yaml
-# config.yaml
-fingerprinting:
-  mode: adaptive  # "rules", "ml", or "adaptive"
-
-  # Adaptive mode settings
-  adaptive:
-    class_change_threshold: 0.15    # Trigger ML if >15% classes changed
-    rules_uncertainty_threshold: 0.80  # Trigger ML if rules similarity < 0.80
-    cache_ml_results: true          # Cache embeddings for reuse
-```
-
-```bash
-# Environment variable
-export CRAWLER_FINGERPRINT_MODE="adaptive"  # or "rules" or "ml"
-```
-
----
-
-### Mode 1: Rules-Based (Default)
+### Mode 1: Rules-Based
 
 Fast, deterministic fingerprinting using DOM structure analysis.
 
 **When to Use:**
-- High-throughput crawling where speed matters
+- High-throughput analysis where speed matters
 - Sites with stable CSS class names
 - When you need deterministic, reproducible results
 - Offline environments without embedding model access
 
-**Advantages:**
-- Fast (~15ms per comparison)
-- Deterministic (same input = same output)
-- No external dependencies
-- Interpretable results (can see exactly what changed)
-
-**Limitations:**
-- Sensitive to CSS class renames (site refactors break detection)
-- Cannot detect semantic similarity (different classes, same structure)
-
-**Components Analyzed:**
-```
-1. Tag Hierarchy
-   - Tag counts: {"div": 450, "p": 120, "article": 1}
-   - Depth distribution: {1: 5, 2: 15, 3: 45, ...}
-   - Parent-child pairs: {"body>div": 10, "article>p": 8, ...}
-
-2. CSS Classes
-   - Class frequencies: {"container": 5, "article": 1, ...}
-   - Semantic class detection (content, article, nav, etc.)
-
-3. Semantic Landmarks
-   - HTML5: <header>, <nav>, <main>, <article>, <aside>, <footer>
-   - ARIA: role="main", role="navigation", etc.
-
-4. Iframes
-   - Selector, src pattern, position, dimensions
-
-5. Scripts
-   - Framework detection: React, Vue, Angular, Next.js, etc.
-```
-
-**Verbose Output:**
-```
-[FINGERPRINT:MODE] Using RULES mode
-[COMPARE:RULES] Computing rules-based similarity
-  - Tag similarity: 0.92
-  - Class similarity: 0.68 (significant class changes detected)
-  - Landmark similarity: 0.95
-  - Structure similarity: 0.88
-[COMPARE:RULES:RESULT] Similarity: 0.78
-[COMPARE:CLASSIFY] Classification: MODERATE (0.70 < 0.78 < 0.85)
-[COMPARE:RESULT] Breaking: NO
-```
-
----
+**Latency:** ~15ms per comparison
 
 ### Mode 2: ML-Based
 
@@ -1152,60 +1042,9 @@ Semantic fingerprinting using sentence transformer embeddings.
 - Sites that undergo regular CSS refactoring
 - When you need rich, human-readable change descriptions
 
-**Advantages:**
-- Robust to class renames (understands semantic meaning)
-- Better at detecting "same structure, different names"
-- Rich descriptions via Ollama Cloud LLM
-- Handles superficial changes gracefully
+**Latency:** ~200ms per comparison
 
-**Limitations:**
-- Slower (~200ms per comparison)
-- Requires embedding model (90MB for MiniLM)
-- Non-deterministic (minor floating-point variations)
-- Ollama Cloud adds network latency for descriptions
-
-**Pipeline:**
-```
-PageStructure
-    │
-    ▼
-DescriptionGenerator (Rules or LLM)
-    │ (creates semantic text: "Article page with sidebar...")
-    ▼
-SentenceTransformer (all-MiniLM-L6-v2)
-    │ (encodes to 384-dim vector)
-    ▼
-StructureEmbedding
-    │
-    ▼
-Cosine Similarity (0.0 - 1.0)
-```
-
-**Verbose Output:**
-```
-[FINGERPRINT:MODE] Using ML mode
-[COMPARE:ML] Computing ML-based similarity
-[COMPARE:ML:DESCRIBE] Generating description for stored structure
-  - Using: RulesBasedDescriptionGenerator
-  - Description: "Article page with semantic HTML5..."
-[COMPARE:ML:EMBED] Generating embedding
-  - Model: all-MiniLM-L6-v2
-  - Dimensions: 384
-[COMPARE:ML:DESCRIBE] Generating description for current structure
-  - Description: "Article page with refactored CSS..."
-[COMPARE:ML:EMBED] Generating embedding
-  - Dimensions: 384
-[COMPARE:ML:SIMILARITY] Computing cosine similarity
-  - Dot product: 0.912
-  - Similarity: 0.912
-[COMPARE:ML:RESULT] Similarity: 0.91
-[COMPARE:CLASSIFY] Classification: MINOR (0.85 < 0.91 < 0.95)
-[COMPARE:RESULT] Breaking: NO
-```
-
----
-
-### Mode 3: Adaptive (Recommended for Production)
+### Mode 3: Adaptive (Recommended)
 
 Intelligent mode selection that starts with fast rules-based comparison and escalates to ML only when needed.
 
@@ -1215,283 +1054,65 @@ Intelligent mode selection that starts with fast rules-based comparison and esca
 - First-time visits to new domains
 - When you want optimal speed without sacrificing accuracy
 
-**How It Works:**
+**Latency:** ~15-200ms depending on escalation
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    ADAPTIVE MODE FLOW                        │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-              ┌─────────────────────────┐
-              │  1. Run Rules-Based     │
-              │     Comparison (~15ms)  │
-              └─────────────────────────┘
-                            │
-                            ▼
-              ┌─────────────────────────┐
-              │  2. Analyze Results     │
-              │     Check triggers      │
-              └─────────────────────────┘
-                            │
-            ┌───────────────┴───────────────┐
-            │                               │
-            ▼                               ▼
-    ┌───────────────┐               ┌───────────────┐
-    │ NO TRIGGERS   │               │ TRIGGERS MET  │
-    │               │               │               │
-    │ Return rules  │               │ Run ML-based  │
-    │ result        │               │ comparison    │
-    │ (~15ms total) │               │ (~200ms total)│
-    └───────────────┘               └───────────────┘
-            │                               │
-            └───────────────┬───────────────┘
-                            │
-                            ▼
-                    ┌───────────────┐
-                    │ Return Result │
-                    └───────────────┘
-```
-
-**Escalation Triggers (any one triggers ML):**
-
+**Escalation Triggers:**
 | Trigger | Condition | Rationale |
 |---------|-----------|-----------|
-| **Class Volatility** | >15% of classes changed | Likely CSS refactor, ML handles renames |
-| **Rules Uncertainty** | Rules similarity < 0.80 | Rules result is ambiguous, need ML clarity |
-| **Known Volatile Site** | Domain flagged as volatile | Historical data shows frequent changes |
-| **Explicit Class Renames** | Detected rename patterns | e.g., `post-*` classes all disappeared |
-
-**Decision Logic:**
-
-```python
-async def compare_adaptive(
-    self,
-    stored: PageStructure,
-    current: PageStructure,
-    verbose: bool = True
-) -> ChangeAnalysis:
-    """
-    Adaptive comparison: Rules first, ML if needed.
-
-    Verbose Logging:
-    - [ADAPTIVE:START] Starting adaptive comparison
-    - [ADAPTIVE:RULES] Running rules-based comparison
-    - [ADAPTIVE:ANALYZE] Analyzing rules result for triggers
-    - [ADAPTIVE:TRIGGER] Trigger detected: {reason}
-    - [ADAPTIVE:ESCALATE] Escalating to ML comparison
-    - [ADAPTIVE:RESULT] Final result from {mode}
-    """
-
-    if verbose:
-        self._log("[ADAPTIVE:START] Starting adaptive comparison")
-        self._log(f"  - Domain: {stored.domain}")
-        self._log(f"  - Page type: {stored.page_type}")
-
-    # Step 1: Always run rules-based first (fast)
-    if verbose:
-        self._log("[ADAPTIVE:RULES] Running rules-based comparison")
-
-    rules_result = self.rules_compare(stored, current)
-
-    if verbose:
-        self._log(f"[ADAPTIVE:RULES:RESULT] Similarity: {rules_result.similarity:.3f}")
-
-    # Step 2: Check escalation triggers
-    if verbose:
-        self._log("[ADAPTIVE:ANALYZE] Checking escalation triggers")
-
-    triggers = self._check_triggers(stored, current, rules_result)
-
-    if not triggers:
-        # No triggers - return rules result
-        if verbose:
-            self._log("[ADAPTIVE:RESULT] No triggers, using rules result")
-            self._log(f"  - Mode used: RULES")
-            self._log(f"  - Total time: ~15ms")
-        return rules_result
-
-    # Step 3: Triggers detected - escalate to ML
-    if verbose:
-        self._log(f"[ADAPTIVE:TRIGGER] Escalation triggered")
-        for trigger in triggers:
-            self._log(f"  - {trigger.name}: {trigger.reason}")
-        self._log("[ADAPTIVE:ESCALATE] Running ML comparison")
-
-    ml_result = await self.ml_compare(stored, current)
-
-    if verbose:
-        self._log(f"[ADAPTIVE:ML:RESULT] Similarity: {ml_result.similarity:.3f}")
-        self._log("[ADAPTIVE:RESULT] Using ML result")
-        self._log(f"  - Mode used: ML (escalated)")
-        self._log(f"  - Total time: ~200ms")
-        self._log(f"  - Escalation reason: {triggers[0].name}")
-
-    # Return ML result (not combined with rules)
-    return ml_result
-
-
-def _check_triggers(
-    self,
-    stored: PageStructure,
-    current: PageStructure,
-    rules_result: ChangeAnalysis
-) -> list[EscalationTrigger]:
-    """
-    Check if any escalation triggers are met.
-
-    Verbose Logging:
-    - [ADAPTIVE:CHECK:CLASSES] Checking class volatility
-    - [ADAPTIVE:CHECK:UNCERTAINTY] Checking rules uncertainty
-    - [ADAPTIVE:CHECK:VOLATILE] Checking known volatile sites
-    - [ADAPTIVE:CHECK:RENAMES] Checking for rename patterns
-    """
-    triggers = []
-
-    # Trigger 1: Class volatility
-    class_change_ratio = self._compute_class_change_ratio(stored, current)
-    if class_change_ratio > self.config.class_change_threshold:
-        triggers.append(EscalationTrigger(
-            name="CLASS_VOLATILITY",
-            reason=f"{class_change_ratio:.0%} of classes changed (threshold: {self.config.class_change_threshold:.0%})"
-        ))
-
-    # Trigger 2: Rules uncertainty
-    if rules_result.similarity < self.config.rules_uncertainty_threshold:
-        triggers.append(EscalationTrigger(
-            name="RULES_UNCERTAINTY",
-            reason=f"Rules similarity {rules_result.similarity:.2f} below threshold {self.config.rules_uncertainty_threshold}"
-        ))
-
-    # Trigger 3: Known volatile site
-    if self._is_known_volatile(stored.domain):
-        triggers.append(EscalationTrigger(
-            name="KNOWN_VOLATILE",
-            reason=f"Domain {stored.domain} flagged as volatile based on history"
-        ))
-
-    # Trigger 4: Explicit rename pattern detected
-    rename_pattern = self._detect_rename_pattern(stored, current)
-    if rename_pattern:
-        triggers.append(EscalationTrigger(
-            name="RENAME_PATTERN",
-            reason=f"Detected rename pattern: {rename_pattern}"
-        ))
-
-    return triggers
-```
-
-**Verbose Output (No Escalation):**
-```
-[ADAPTIVE:START] Starting adaptive comparison
-  - Domain: stable-site.com
-  - Page type: article
-
-[ADAPTIVE:RULES] Running rules-based comparison
-[COMPARE:RULES] Computing similarity...
-  - Tag similarity: 0.95
-  - Class similarity: 0.92
-  - Landmark similarity: 0.98
-[ADAPTIVE:RULES:RESULT] Similarity: 0.94
-
-[ADAPTIVE:ANALYZE] Checking escalation triggers
-[ADAPTIVE:CHECK:CLASSES] Class change ratio: 8% (threshold: 15%) - NO TRIGGER
-[ADAPTIVE:CHECK:UNCERTAINTY] Similarity 0.94 >= 0.80 - NO TRIGGER
-[ADAPTIVE:CHECK:VOLATILE] Domain not in volatile list - NO TRIGGER
-[ADAPTIVE:CHECK:RENAMES] No rename patterns detected - NO TRIGGER
-
-[ADAPTIVE:RESULT] No triggers, using rules result
-  - Mode used: RULES
-  - Similarity: 0.94
-  - Classification: MINOR
-  - Total time: 18ms
-```
-
-**Verbose Output (With Escalation):**
-```
-[ADAPTIVE:START] Starting adaptive comparison
-  - Domain: frequently-refactored.com
-  - Page type: article
-
-[ADAPTIVE:RULES] Running rules-based comparison
-[COMPARE:RULES] Computing similarity...
-  - Tag similarity: 0.91
-  - Class similarity: 0.52 (significant changes!)
-  - Landmark similarity: 0.95
-[ADAPTIVE:RULES:RESULT] Similarity: 0.72
-
-[ADAPTIVE:ANALYZE] Checking escalation triggers
-[ADAPTIVE:CHECK:CLASSES] Class change ratio: 38% (threshold: 15%) - TRIGGERED
-[ADAPTIVE:CHECK:UNCERTAINTY] Similarity 0.72 < 0.80 - TRIGGERED
-[ADAPTIVE:CHECK:RENAMES] Pattern detected: "post-*" prefix removed - TRIGGERED
-
-[ADAPTIVE:TRIGGER] Escalation triggered
-  - CLASS_VOLATILITY: 38% of classes changed (threshold: 15%)
-  - RULES_UNCERTAINTY: Rules similarity 0.72 below threshold 0.80
-  - RENAME_PATTERN: Detected rename pattern: post-* prefix removal
-
-[ADAPTIVE:ESCALATE] Running ML comparison
-[COMPARE:ML:DESCRIBE] Generating descriptions...
-[COMPARE:ML:EMBED] Computing embeddings...
-[COMPARE:ML:SIMILARITY] Cosine similarity: 0.89
-[ADAPTIVE:ML:RESULT] Similarity: 0.89
-
-[ADAPTIVE:RESULT] Using ML result
-  - Mode used: ML (escalated)
-  - Similarity: 0.89
-  - Classification: MINOR
-  - Total time: 215ms
-  - Escalation reason: CLASS_VOLATILITY
-
-[ADAPTIVE:INSIGHT] ML detected semantic similarity despite class renames
-  - Rules saw: 0.72 (MODERATE, potentially breaking)
-  - ML saw: 0.89 (MINOR, safe to continue)
-  - Action: Adapt selectors, no re-learning needed
-```
-
----
-
-### Mode Comparison Summary
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        DECISION GUIDE                                │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  "I need maximum speed"                                              │
-│      └─→ Use RULES mode                                             │
-│                                                                      │
-│  "Site frequently renames CSS classes"                               │
-│      └─→ Use ML mode                                                │
-│                                                                      │
-│  "I'm crawling many different sites"                                 │
-│      └─→ Use ADAPTIVE mode (recommended)                            │
-│                                                                      │
-│  "I don't know the site characteristics"                             │
-│      └─→ Use ADAPTIVE mode                                          │
-│                                                                      │
-│  "I need deterministic results for testing"                          │
-│      └─→ Use RULES mode                                             │
-│                                                                      │
-│  "I want rich change descriptions"                                   │
-│      └─→ Use ML mode with Ollama Cloud                              │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
-```
+| CLASS_VOLATILITY | >15% of classes changed | Likely CSS refactor |
+| RULES_UNCERTAINTY | Rules similarity < 0.80 | Result is ambiguous |
+| KNOWN_VOLATILE | Domain flagged as volatile | Historical data |
+| RENAME_PATTERN | Detected rename patterns | e.g., prefix removal |
 
 ### Important: Modes are Independent
 
-The three modes are **mutually exclusive** - you choose one:
-
 - **No weighted combination**: We do not combine rules and ML scores
 - **No parallel execution**: Adaptive runs rules first, then ML only if triggered
-- **Single result**: Each comparison returns one similarity score from one mode
-- **Clear provenance**: Result always indicates which mode produced it
+- **Single result**: Returns one similarity score from one mode
+- **Clear provenance**: Result indicates which mode produced it
 
-This design ensures:
-1. Predictable performance (you know latency based on mode)
-2. Clear debugging (one method to investigate, not two)
-3. Appropriate tool for the job (fast when possible, accurate when needed)
+---
+
+## Ollama Cloud Integration
+
+### Endpoint
+
+```
+POST https://ollama.com/api/chat
+```
+
+### Authentication
+
+```
+Authorization: Bearer {OLLAMA_CLOUD_API_KEY}
+```
+
+### Request Format
+
+```json
+{
+    "model": "gemma3:12b",
+    "messages": [{"role": "user", "content": "..."}],
+    "stream": false,
+    "options": {
+        "num_predict": 500,
+        "temperature": 0.3
+    }
+}
+```
+
+### Response Format
+
+```json
+{
+    "message": {
+        "role": "assistant",
+        "content": "Generated description..."
+    }
+}
+```
+
+See `fingerprint/ml/AGENTS.md` for complete implementation details.
 
 ---
 
@@ -1500,399 +1121,188 @@ This design ensures:
 ### Key Patterns
 
 ```
-# Basic structure storage
-crawler:structure:{domain}:{page_type}:{variant_id}     → JSON(PageStructure)
-crawler:structure:{domain}:{page_type}:{variant_id}:v{n} → JSON(PageStructure history)
+# Structure storage
+{prefix}:structure:{domain}:{page_type}:{variant_id}
+{prefix}:structure:{domain}:{page_type}:{variant_id}:v{n}
+
+# Embeddings
+{prefix}:embedding:{domain}:{page_type}:{variant_id}
 
 # Extraction strategies
-crawler:strategy:{domain}:{page_type}:{variant_id}      → JSON(ExtractionStrategy)
-
-# Variant tracking
-crawler:variants:{domain}:{page_type}                   → SET[variant_id]
+{prefix}:strategy:{domain}:{page_type}:{variant_id}
 
 # Change history
-crawler:changes:{domain}:{page_type}                    → LIST[JSON(StructureChange)]
+{prefix}:changes:{domain}:{page_type}
 
-# LLM-enhanced storage
-crawler:structure_llm:{domain}:{page_type}:{variant_id} → JSON(PageStructure + description)
-crawler:embedding:{domain}:{page_type}:{variant_id}     → BLOB(embedding vector)
-
-# URL management
-crawler:url_frontier                                     → ZSET[(url, priority)]
-crawler:url_visited                                      → SET[url]
-crawler:url_in_progress                                  → SET[url]
-
-# Robots cache
-crawler:robots:{domain}                                  → JSON(robots.txt + metadata)
-
-# Rate limiting
-crawler:rate_state:{domain}                             → JSON(delay, last_request, backoff)
-
-# Distributed coordination
-crawler:workers                                          → SET[worker_id]
-crawler:worker:{worker_id}                              → JSON(state, heartbeat)
-crawler:domain_assignment:{domain}                      → worker_id
+# Volatile sites tracking
+{prefix}:volatile:{domain}
 ```
 
-### Example Data
-
-```json
-// Key: crawler:structure:example.com:article:default
-{
-    "domain": "example.com",
-    "page_type": "article",
-    "variant_id": "default",
-    "version": 3,
-    "captured_at": "2025-01-20T10:30:00Z",
-
-    "tag_hierarchy": {
-        "tag_counts": {"div": 45, "p": 12, "article": 1, "h1": 1},
-        "depth_distribution": {"1": 3, "2": 8, "3": 25, "4": 15},
-        "parent_child_pairs": {"article>h1": 1, "article>p": 8}
-    },
-
-    "css_class_map": {
-        "container": 3,
-        "article-content": 1,
-        "title": 1
-    },
-
-    "semantic_landmarks": {
-        "header": "header.site-header",
-        "nav": "nav.main-nav",
-        "main": "main.content",
-        "article": "article.post",
-        "footer": "footer.site-footer"
-    },
-
-    "content_regions": [
-        {
-            "name": "main_content",
-            "primary_selector": "article.post",
-            "fallback_selectors": ["main.content", "div.article"],
-            "confidence": 0.92
-        }
-    ],
-
-    "content_hash": "a1b2c3d4e5f6"
-}
-```
+See `fingerprint/storage/AGENTS.md` for complete implementation details.
 
 ---
 
-## Verbose Logging System
+## Verbose Logging Format
 
-### Enabling Verbose Mode
-
-```python
-# Via environment variable
-export CRAWLER_VERBOSE=3  # 0=errors, 1=warn, 2=info, 3=debug
-
-# Via command line
-python -m crawler --seed-url https://example.com --verbose
-
-# Via config
-verbose:
-  level: 3
-  modules:
-    fetcher: 3
-    structure_analyzer: 3
-    ml: 2
-
-# Via code
-crawler = Crawler(config, verbose=True)
-```
-
-### Log Format
+All modules use consistent verbose logging:
 
 ```
-[{TIMESTAMP}] [{MODULE}:{OPERATION}] {MESSAGE}
-  - {detail_1}
-  - {detail_2}
-  ...
+[TIMESTAMP] [MODULE:OPERATION] Message
+  - key: value
+  - key: value
 ```
 
 ### Module Prefixes
 
 | Module | Prefix | Operations |
 |--------|--------|------------|
-| Crawler | `CRAWLER` | INIT, START, URL, FETCH, EXTRACT, CHANGE, CHECKPOINT, COMPLETE |
-| Fetcher | `FETCHER` | CFAA, ROBOTS, RATE, HTTP, PII, ADAPT |
-| Scheduler | `SCHEDULER` | ADD, SKIP, NEXT, STATS |
-| Robots | `ROBOTS` | FETCH, CACHE, PARSE, MATCH, CHECK, DELAY |
-| Rate | `RATE` | INIT, STATE, ACQUIRE, ADAPT, BACKOFF, RECOVER |
-| Structure | `STRUCTURE` | ANALYZE, TAGS, CLASSES, LANDMARKS, IFRAMES, SCRIPTS, REGIONS, HASH |
-| Change | `CHANGE` | COMPARE, SIMILARITY, CLASSIFY, DETAILS, BREAKING, FIELDS |
-| Learn | `LEARN` | START, SEMANTIC, ARIA, SCHEMA, HEURISTIC, CANDIDATE, SELECT, FALLBACK, COMPLETE |
-| Extract | `EXTRACT` | STRATEGY, SELECTOR, MATCH, FALLBACK, FIELD, VALIDATE |
-| ML | `ML` | CHANGE, SIMILARITY, THRESHOLD, BREAKING, IMPACT |
-| Embed | `EMBED` | INIT, DESCRIBE, ENCODE, DIMS, NORM |
-| LLM | `LLM` | INIT, PROMPT, REQUEST, RESPONSE, DESCRIPTION |
-| Classify | `CLASSIFY` | INIT, FEATURES, PREDICT, RESULT |
-| Store | `STORE` | GET, HIT, MISS, SAVE, UPDATE, VARIANT, HISTORY |
-| Alert | `ALERT` | TRIGGER, THROTTLE, SEND, SUCCESS, FAIL |
-
-### Full Verbose Output Example
-
-```
-[2025-01-20T10:30:00Z] [CRAWLER:START] Starting crawl session
-  - Seed URLs: 1
-  - Max depth: 10
-  - Rate limit: 1.0 req/sec
-
-[2025-01-20T10:30:00Z] [CRAWLER:URL] Processing: https://example.com/
-  - Priority: 1.0
-  - Depth: 0
-  - Queue size: 0
-
-[2025-01-20T10:30:00Z] [FETCHER:CFAA] Checking authorization
-  - Domain: example.com
-  - Checking robots.txt...
-  - Checking ToS...
-  - Result: AUTHORIZED (basis: public_access)
-
-[2025-01-20T10:30:00Z] [FETCHER:ROBOTS] Checking robots.txt
-  - URL: https://example.com/
-  - Cache: HIT (age: 3600s)
-  - Rule matched: Allow /
-  - Result: ALLOWED
-
-[2025-01-20T10:30:00Z] [FETCHER:RATE] Acquiring rate limit slot
-  - Domain: example.com
-  - Current delay: 1.0s
-  - Waiting: 0.0s (first request)
-  - Slot acquired
-
-[2025-01-20T10:30:01Z] [FETCHER:HTTP] Request complete
-  - URL: https://example.com/
-  - Status: 200 OK
-  - Size: 45,230 bytes
-  - Duration: 245ms
-  - Content-Type: text/html
-
-[2025-01-20T10:30:01Z] [STRUCTURE:ANALYZE] Analyzing page structure
-  - HTML size: 45,230 bytes
-  - Parsing...
-
-[2025-01-20T10:30:01Z] [STRUCTURE:TAGS] Tag distribution
-  - div: 145
-  - p: 42
-  - a: 38
-  - span: 25
-  - article: 1
-
-[2025-01-20T10:30:01Z] [STRUCTURE:CLASSES] CSS classes
-  - Found 67 unique classes
-  - Semantic classes: container, article, content, nav
-
-[2025-01-20T10:30:01Z] [STRUCTURE:LANDMARKS] Semantic landmarks
-  - header: header.site-header
-  - nav: nav.main-navigation
-  - main: main#content
-  - footer: footer.site-footer
-
-[2025-01-20T10:30:01Z] [STRUCTURE:REGIONS] Content regions
-  - main_content: article.post (confidence: 0.92)
-  - sidebar: aside.sidebar (confidence: 0.85)
-
-[2025-01-20T10:30:01Z] [STORE:GET] Getting stored structure
-  - Domain: example.com
-  - Page type: homepage
-  - Result: MISS (first visit)
-
-[2025-01-20T10:30:01Z] [LEARN:START] Learning extraction strategy
-  - Domain: example.com
-  - Page type: homepage
-
-[2025-01-20T10:30:01Z] [LEARN:SEMANTIC] Checking semantic HTML
-  - Found: <main>, <article>, <h1>
-  - Title candidate: article h1 (confidence: 0.95)
-  - Content candidate: article (confidence: 0.92)
-
-[2025-01-20T10:30:01Z] [LLM:INIT] Generating LLM description
-  - Provider: ollama-cloud
-  - Model: gemma3:12b
-
-[2025-01-20T10:30:02Z] [LLM:REQUEST] Sending to Ollama Cloud API
-  - Prompt length: 850 chars
-  - Waiting for response...
-
-[2025-01-20T10:30:03Z] [LLM:RESPONSE] Response received
-  - Content length: 234 chars
-  - Description: "Modern homepage with semantic HTML5 structure.
-    Features hero section, article grid, and sidebar navigation.
-    Clean separation between header, main content, and footer."
-
-[2025-01-20T10:30:03Z] [EMBED:ENCODE] Generating embedding
-  - Model: all-MiniLM-L6-v2
-  - Input: LLM description (234 chars)
-  - Output: 384 dimensions
-  - L2 norm: 1.0
-
-[2025-01-20T10:30:03Z] [STORE:SAVE] Saving structure
-  - Domain: example.com
-  - Page type: homepage
-  - Version: 1
-  - With LLM description: Yes
-  - With embedding: Yes
-
-[2025-01-20T10:30:03Z] [EXTRACT:STRATEGY] Applying extraction strategy
-  - Fields: title, content, links
-  - Selectors loaded
-
-[2025-01-20T10:30:03Z] [EXTRACT:FIELD] Extracting title
-  - Selector: article h1
-  - Matched: 1 element
-  - Value: "Welcome to Example.com"
-
-[2025-01-20T10:30:03Z] [CRAWLER:COMPLETE] URL processing complete
-  - URL: https://example.com/
-  - Status: SUCCESS
-  - Extracted fields: 3
-  - New URLs discovered: 15
-  - Duration: 3.2s
-```
+| Analyzer | `ANALYZER` | INIT, FETCH, ANALYZE, COMPARE, RESULT |
+| Structure | `STRUCTURE` | PARSE, TAGS, CLASSES, LANDMARKS, REGIONS, HASH |
+| Change | `CHANGE` | COMPARE, SIMILARITY, CLASSIFY, DETAILS |
+| Adaptive | `ADAPTIVE` | START, RULES, ANALYZE, TRIGGER, ESCALATE, RESULT |
+| ML | `ML` | DESCRIBE, EMBED, SIMILARITY |
+| Ollama | `OLLAMA` | INIT, REQUEST, RESPONSE, ERROR |
+| Store | `STORE` | GET, SAVE, UPDATE, DELETE |
 
 ---
 
-## Environment Variables Reference
+## Module Specifications
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| **Core** |
-| `CRAWLER_USER_AGENT` | `AdaptiveCrawler/1.0` | User-agent string |
-| `CRAWLER_VERBOSE` | `2` | Verbose logging level (0-3) |
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection |
-| **Rate Limiting** |
-| `CRAWLER_DEFAULT_DELAY` | `1.0` | Base delay (seconds) |
-| `CRAWLER_MIN_DELAY` | `0.5` | Minimum delay floor |
-| `CRAWLER_MAX_DELAY` | `60.0` | Maximum delay ceiling |
-| `CRAWLER_RESPECT_CRAWL_DELAY` | `true` | Honor Crawl-delay |
-| **Ollama Cloud** |
-| `OLLAMA_CLOUD_API_KEY` | `` | **Required** API key |
-| `OLLAMA_CLOUD_MODEL` | `gemma3:12b` | Model to use |
-| `OLLAMA_CLOUD_TIMEOUT` | `30` | Request timeout |
-| **ML** |
-| `CRAWLER_ENABLE_ML` | `true` | Enable ML fingerprinting |
-| `CRAWLER_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Embedding model |
-| `CRAWLER_BREAKING_THRESHOLD` | `0.70` | Breaking change threshold |
-| **Legal** |
-| `GDPR_ENABLED` | `true` | Enable GDPR compliance |
-| `GDPR_RETENTION_DAYS` | `365` | Data retention period |
-| `PII_HANDLING` | `redact` | PII action |
-| `CCPA_ENABLED` | `true` | Enable CCPA compliance |
-| **Storage** |
-| `CRAWLER_STRUCTURE_TTL` | `604800` | Structure TTL (7 days) |
-| `CRAWLER_MAX_VERSIONS` | `10` | Max structure versions |
+The following AGENTS.md files contain detailed implementation specifications for each module:
+
+- `fingerprint/core/AGENTS.md` - Core analyzer and orchestration
+- `fingerprint/adaptive/AGENTS.md` - Rules-based fingerprinting and change detection
+- `fingerprint/ml/AGENTS.md` - ML embeddings and Ollama Cloud integration
+- `fingerprint/storage/AGENTS.md` - Redis storage layer
 
 ---
 
-## Exception Hierarchy
+## Example Usage
+
+### Basic Fingerprinting
 
 ```python
-CrawlerError                    # Base exception
-├── ComplianceError             # Compliance check failed
-│   ├── RobotsBlockedError      # Blocked by robots.txt
-│   ├── RateLimitExceededError  # Rate limit exceeded
-│   └── CFAABlockedError        # CFAA authorization denied
-├── FetchError                  # HTTP fetch failed
-│   ├── TimeoutError            # Request timeout
-│   ├── ConnectionError         # Connection failed
-│   └── CircuitOpenError        # Circuit breaker open
-├── ExtractionError             # Content extraction failed
-│   ├── StructureChangeError    # Breaking structure change
-│   └── StrategyInferenceError  # Failed to learn strategy
-├── StorageError                # Storage operation failed
-│   ├── RedisConnectionError    # Redis connection failed
-│   └── SerializationError      # JSON serialization failed
-├── LLMError                    # Ollama Cloud error
-│   ├── OllamaAuthError         # Authentication failed
-│   ├── OllamaTimeoutError      # Request timeout
-│   └── OllamaRateLimitError    # API rate limited
-└── LegalComplianceError        # Legal requirement not met
-    ├── GDPRViolationError      # GDPR violation
-    ├── PIIExposureError        # PII handling failed
-    └── CeaseAndDesistError     # Domain blocked
+import asyncio
+from fingerprint.config import load_config
+from fingerprint.core.analyzer import StructureAnalyzer
+
+async def main():
+    config = load_config()
+    analyzer = StructureAnalyzer(config)
+
+    # Analyze a URL
+    structure = await analyzer.analyze_url("https://example.com/article")
+    print(f"Page type: {structure.page_type}")
+    print(f"Classes: {len(structure.css_class_map)}")
+
+    # Compare with stored version
+    changes = await analyzer.compare_with_stored("https://example.com/article")
+    print(f"Similarity: {changes.similarity:.3f}")
+    print(f"Breaking: {changes.breaking}")
+
+asyncio.run(main())
+```
+
+### Using Adaptive Mode
+
+```python
+import asyncio
+from fingerprint.config import load_config
+from fingerprint.core.analyzer import StructureAnalyzer
+
+async def main():
+    config = load_config()
+    config.mode = "adaptive"
+
+    analyzer = StructureAnalyzer(config)
+
+    # Adaptive mode automatically selects best approach
+    result = await analyzer.compare_with_stored("https://example.com")
+
+    print(f"Mode used: {result.mode_used.value}")
+    if result.escalated:
+        print("Escalated to ML because:")
+        for trigger in result.escalation_triggers:
+            print(f"  - {trigger.name}: {trigger.reason}")
+
+asyncio.run(main())
+```
+
+### Generating Descriptions with Ollama Cloud
+
+```python
+import asyncio
+from fingerprint.config import load_config
+from fingerprint.core.analyzer import StructureAnalyzer
+
+async def main():
+    config = load_config()
+    config.ollama_cloud.enabled = True
+
+    analyzer = StructureAnalyzer(config)
+
+    structure = await analyzer.analyze_url("https://example.com")
+    description = await analyzer.generate_description(structure)
+
+    print("LLM Description:")
+    print(description)
+
+asyncio.run(main())
 ```
 
 ---
 
-## Dependencies
+## README.md
 
-### Required
+Generate with these contents:
 
-```toml
-[project]
-dependencies = [
-    "httpx>=0.27.0",              # Async HTTP client
-    "beautifulsoup4>=4.12.0",     # HTML parsing
-    "lxml>=5.0.0",                # Fast XML parser
-    "redis>=5.0.0",               # Redis client
-    "pydantic>=2.0.0",            # Configuration
-    "pydantic-settings>=2.0.0",   # Env loading
-    "sentence-transformers>=2.3.0", # Embeddings
-    "numpy>=1.24.0",              # Numerical ops
-]
+```markdown
+# Adaptive Structure Fingerprinting System
+
+An intelligent web structure fingerprinting system with adaptive learning, Ollama Cloud LLM integration, and comprehensive verbose logging.
+
+## Features
+
+- **Three Fingerprinting Modes**: Rules-based (fast), ML-based (semantic), Adaptive (smart selection)
+- **Ollama Cloud Integration**: Rich structure descriptions via LLM
+- **Change Detection**: Classify changes as cosmetic, minor, moderate, or breaking
+- **Redis Storage**: Persistent structure storage with versioning
+- **Verbose Logging**: Comprehensive logging for debugging and monitoring
+
+## Installation
+
+```bash
+pip install -e .
 ```
 
-### Optional
+## Quick Start
 
-```toml
-[project.optional-dependencies]
-ml = [
-    "xgboost>=2.0.0",             # Gradient boosting
-    "lightgbm>=4.0.0",            # Fast gradient boosting
-    "scikit-learn>=1.3.0",        # ML utilities
-]
-js = [
-    "playwright>=1.43.0",         # Browser automation
-]
-metrics = [
-    "prometheus-client>=0.20.0",  # Metrics export
-]
+```bash
+# Set Ollama Cloud API key
+export OLLAMA_CLOUD_API_KEY="your-api-key"
+
+# Start Redis
+docker run -d -p 6379:6379 redis:7-alpine
+
+# Analyze a URL
+fingerprint analyze --url https://example.com
+
+# Compare with stored version
+fingerprint compare --url https://example.com --mode adaptive
+
+# Generate LLM description
+fingerprint describe --url https://example.com
 ```
 
----
+## Configuration
 
-## Common Tasks
+Copy `config.example.yaml` to `config.yaml` and customize as needed.
 
-### Adding a New Change Type
+## Documentation
 
-1. Add enum to `ChangeType` in `crawler/models.py`
-2. Implement detection in `crawler/adaptive/change_detector.py`
-3. Add reason template in detection
-4. Update verbose logging
+See `AGENTS.md` for complete specification and implementation details.
 
-### Adding a New Extraction Field
+## License
 
-1. Add field to `ExtractionStrategy` in `crawler/models.py`
-2. Add inference logic in `crawler/adaptive/strategy_learner.py`
-3. Add extraction logic in `crawler/extraction/content_extractor.py`
-4. Update verbose logging
-
-### Modifying Rate Limiting
-
-1. Configuration: `crawler/config.py` → `RateLimitConfig`
-2. Logic: `crawler/compliance/rate_limiter.py`
-3. Key methods: `acquire()`, `adapt()`, `set_domain_delay()`
-
-### Customizing LLM Prompts
-
-1. Edit prompts in `crawler/ml/embeddings.py` → `LLMDescriptionGenerator`
-2. Modify `_create_structure_prompt()` method
-3. Adjust `max_tokens` and `temperature` as needed
-
----
-
-## License and Ethical Use
-
-This crawler is designed for ethical, legal web data collection. Users are responsible for:
-
-1. Complying with applicable laws (CFAA, GDPR, CCPA)
-2. Respecting website terms of service
-3. Obtaining necessary legal advice
-4. Using collected data appropriately
-5. Maintaining reasonable crawl rates
-6. Responding to abuse reports promptly
-
-**Disclaimer**: This documentation provides technical guidance, not legal advice. Consult qualified legal counsel for your specific use case.
+MIT
+```
