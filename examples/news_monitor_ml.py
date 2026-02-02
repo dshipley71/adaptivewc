@@ -210,6 +210,9 @@ class MLMonitorConfig:
     # Model persistence
     model_dir: str = "./ml_models_news"
 
+    # Verbose output
+    verbose: bool = False
+
 
 class MLNewsMonitor:
     """
@@ -522,12 +525,24 @@ class MLNewsMonitor:
         """
         self.logger.info("Checking URL (ML)", url=url)
 
+        # Verbose: Start check
+        if self.config.verbose:
+            print(f"\n{'='*70}")
+            print(f"  CHECKING URL: {url}")
+            print(f"{'='*70}")
+
         result = await self.fetch_page(url)
         if not result:
             self.logger.error("Failed to fetch page", url=url)
             return None
 
         html, status_code = result
+
+        # Verbose: Fetch results
+        if self.config.verbose:
+            print(f"\n[1] PAGE FETCH")
+            print(f"    Status: {status_code}")
+            print(f"    HTML size: {len(html):,} bytes")
 
         if status_code != 200:
             self.logger.warning("Non-200 status", url=url, status=status_code)
@@ -537,12 +552,46 @@ class MLNewsMonitor:
         page_type_rules = self._classify_page_type_rules(url)
         current_structure = self.structure_analyzer.analyze(html, url, page_type_rules)
 
+        # Verbose: Structure analysis
+        if self.config.verbose:
+            print(f"\n[2] STRUCTURE ANALYSIS")
+            print(f"    Domain: {domain}")
+            print(f"    Page type (rules): {page_type_rules}")
+            tag_counts = current_structure.tag_hierarchy.get("tag_counts", {}) if current_structure.tag_hierarchy else {}
+            total_tags = sum(tag_counts.values()) if tag_counts else 0
+            print(f"    Total tags: {total_tags}")
+            if tag_counts:
+                top_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+                print(f"    Top tags: {', '.join(f'{t}:{c}' for t, c in top_tags)}")
+            print(f"    Content regions: {len(current_structure.content_regions) if current_structure.content_regions else 0}")
+            if current_structure.content_regions:
+                for i, region in enumerate(current_structure.content_regions[:3]):
+                    print(f"      [{i+1}] {region.name}: {region.primary_selector}")
+            landmarks = list(current_structure.semantic_landmarks.keys()) if current_structure.semantic_landmarks else []
+            print(f"    Semantic landmarks: {landmarks}")
+            print(f"    Navigation selectors: {len(current_structure.navigation_selectors) if current_structure.navigation_selectors else 0}")
+            print(f"    CSS classes tracked: {len(current_structure.css_class_map) if current_structure.css_class_map else 0}")
+            print(f"    Content hash: {current_structure.content_hash[:16]}...")
+
         # ML: Compute structure embedding
         current_embedding_obj = self.embedding_model.embed_structure(current_structure)
         current_embedding = current_embedding_obj.embedding
 
+        # Verbose: Embedding
+        if self.config.verbose:
+            print(f"\n[3] ML EMBEDDING")
+            print(f"    Model: {self.config.embedding_model}")
+            print(f"    Embedding dimensions: {len(current_embedding)}")
+            print(f"    Embedding norm: {sum(x*x for x in current_embedding)**0.5:.4f}")
+            print(f"    First 5 values: [{', '.join(f'{v:.4f}' for v in current_embedding[:5])}]")
+
         # ML: Get previous embedding
         previous_embedding = self._structure_embeddings.get(url)
+
+        # Verbose: Previous state
+        if self.config.verbose:
+            print(f"\n[4] COMPARISON WITH PREVIOUS")
+            print(f"    Has previous embedding: {previous_embedding is not None}")
 
         # ML: Compute similarity using embeddings
         if previous_embedding:
@@ -555,14 +604,40 @@ class MLNewsMonitor:
                 similarity=f"{similarity:.4f}",
             )
 
+            # Verbose: Similarity
+            if self.config.verbose:
+                print(f"    Embedding similarity: {similarity:.4f} ({similarity:.2%})")
+                print(f"    Threshold for 'no change': > 0.98")
+                if similarity > 0.98:
+                    print(f"    Decision: NO SIGNIFICANT CHANGE (similarity > 0.98)")
+                else:
+                    print(f"    Decision: CHANGE DETECTED (similarity <= 0.98)")
+
             if similarity > 0.98:
                 self.logger.debug("No significant structural changes (embedding)", url=url)
+                if self.config.verbose:
+                    print(f"\n{'='*70}")
+                    print(f"  RESULT: No changes detected")
+                    print(f"{'='*70}\n")
                 return None
         else:
             similarity = 0.0
+            if self.config.verbose:
+                print(f"    No previous embedding - this is a NEW page")
+                print(f"    Similarity set to: 0.0 (new baseline)")
 
         # ML: Classify page type using ML
         page_type_ml, page_type_confidence = self._classify_page_type_ml(current_structure, url)
+
+        # Verbose: ML Classification
+        if self.config.verbose:
+            print(f"\n[5] ML PAGE TYPE CLASSIFICATION")
+            print(f"    Classifier type: {self.config.classifier_type}")
+            print(f"    Predicted type: {page_type_ml}")
+            print(f"    Confidence: {page_type_confidence:.2%}")
+            print(f"    Rules-based type: {page_type_rules}")
+            if page_type_ml != page_type_rules:
+                print(f"    ⚠ ML and rules disagree!")
 
         # Collect training data
         self._training_data.append((current_structure, page_type_rules))
@@ -576,6 +651,15 @@ class MLNewsMonitor:
             domain, page_type_rules, "default"
         )
 
+        # Verbose: Storage lookup
+        if self.config.verbose:
+            print(f"\n[6] STORAGE LOOKUP")
+            print(f"    Has stored structure: {stored_structure is not None}")
+            print(f"    Has stored strategy: {stored_strategy is not None}")
+            if stored_structure:
+                print(f"    Stored version: {stored_structure.version}")
+                print(f"    Stored hash: {stored_structure.content_hash[:16]}...")
+
         change_type = "new_content"
         llm_description: str | None = None
         strategy: ExtractionStrategy
@@ -587,10 +671,30 @@ class MLNewsMonitor:
                 stored_structure, current_structure
             )
 
+            # Verbose: ML Change Detection
+            if self.config.verbose:
+                print(f"\n[7] ML CHANGE DETECTION")
+                print(f"    Breaking threshold: {self.config.breaking_threshold}")
+                print(f"    ML similarity: {ml_analysis['similarity']:.4f} ({ml_analysis['similarity']:.2%})")
+                print(f"    Is breaking: {ml_analysis['is_breaking']}")
+                print(f"    Change magnitude: {1 - ml_analysis['similarity']:.2%}")
+
             # Also run rules-based change detection for detailed diff
             change_analysis = self.change_detector.detect_changes(
                 stored_structure, current_structure
             )
+
+            # Verbose: Rules-based analysis
+            if self.config.verbose:
+                print(f"\n[8] RULES-BASED CHANGE ANALYSIS")
+                print(f"    Has changes: {change_analysis.has_changes}")
+                print(f"    Classification: {change_analysis.classification.value}")
+                print(f"    Similarity score: {change_analysis.similarity_score:.2%}")
+                print(f"    Requires relearning: {change_analysis.requires_relearning}")
+                if change_analysis.changes:
+                    print(f"    Changes detected: {len(change_analysis.changes)}")
+                    for i, ch in enumerate(change_analysis.changes[:3]):
+                        print(f"      [{i+1}] {ch.change_type.value}: {ch.reason[:60]}...")
 
             # Set baseline for drift detection
             self.ml_change_detector.set_site_baseline(domain, stored_structure)
@@ -603,8 +707,15 @@ class MLNewsMonitor:
                     similarity=f"{ml_analysis['similarity']:.2%}",
                 )
 
+                if self.config.verbose:
+                    print(f"\n[9] BREAKING CHANGE HANDLING")
+                    print(f"    Change type: structure_changed")
+
                 # Use LLM to describe changes
                 if self.llm_generator:
+                    if self.config.verbose:
+                        print(f"    Generating LLM description...")
+                        print(f"    LLM provider: {self.config.llm_provider}")
                     try:
                         llm_description = self.llm_generator.generate_for_change_detection(
                             stored_structure, current_structure
@@ -613,24 +724,39 @@ class MLNewsMonitor:
                             "LLM generated change description",
                             description=llm_description[:100] + "...",
                         )
+                        if self.config.verbose:
+                            print(f"    LLM description: {llm_description[:200]}...")
                     except Exception as e:
                         self.logger.warning("LLM description failed", error=str(e))
+                        if self.config.verbose:
+                            print(f"    LLM description FAILED: {e}")
 
                 # Adapt strategy
+                if self.config.verbose:
+                    print(f"    Adapting extraction strategy...")
                 adapted = self.strategy_learner.adapt(
                     stored_strategy, current_structure, html
                 )
                 strategy = adapted.strategy
                 strategy.version = stored_strategy.version + 1
 
+                if self.config.verbose:
+                    print(f"    New strategy version: {strategy.version}")
+
                 # Save new structure and strategy
                 current_structure.version = stored_structure.version + 1
                 await self.structure_store.save_structure(
                     current_structure, strategy, "default"
                 )
+                if self.config.verbose:
+                    print(f"    Saved updated structure and strategy")
             else:
                 strategy = stored_strategy
                 change_type = "content_updated"
+                if self.config.verbose:
+                    print(f"\n[9] NO BREAKING CHANGE")
+                    print(f"    Change type: content_updated")
+                    print(f"    Using existing strategy (version {strategy.version})")
         else:
             self.logger.info(
                 "Learning new page structure (ML)",
@@ -639,22 +765,56 @@ class MLNewsMonitor:
             )
             change_type = "new_content"
 
+            if self.config.verbose:
+                print(f"\n[7] NEW PAGE - LEARNING STRUCTURE")
+                print(f"    Change type: new_content")
+
             # Use LLM to describe structure
             if self.llm_generator:
+                if self.config.verbose:
+                    print(f"    Generating LLM description of structure...")
                 try:
                     llm_description = self.llm_generator.generate(current_structure)
+                    if self.config.verbose:
+                        print(f"    LLM description: {llm_description[:200] if llm_description else 'None'}...")
                 except Exception as e:
                     self.logger.warning("LLM description failed", error=str(e))
+                    if self.config.verbose:
+                        print(f"    LLM description FAILED: {e}")
 
+            if self.config.verbose:
+                print(f"    Inferring extraction strategy...")
             learned = self.strategy_learner.infer(html, current_structure)
             strategy = learned.strategy
+
+            if self.config.verbose:
+                print(f"    Strategy version: {strategy.version}")
+                print(f"    Extraction rules: {len(strategy.rules)}")
+                for field, rule in list(strategy.rules.items())[:3]:
+                    print(f"      {field}: {rule.primary} (conf: {rule.confidence:.2f})")
 
             await self.structure_store.save_structure(
                 current_structure, strategy, "default"
             )
+            if self.config.verbose:
+                print(f"    Saved new structure and strategy")
 
         # Extract content
+        if self.config.verbose:
+            print(f"\n[10] CONTENT EXTRACTION")
         extraction_result = self.content_extractor.extract(url, html, strategy)
+
+        if self.config.verbose:
+            print(f"    Success: {extraction_result.success}")
+            print(f"    Confidence: {extraction_result.confidence:.2%}")
+            if extraction_result.errors:
+                print(f"    Errors: {extraction_result.errors}")
+            if extraction_result.content:
+                content = extraction_result.content
+                print(f"    Title: {content.title[:60] if content.title else 'None'}...")
+                print(f"    Content length: {len(content.content) if content.content else 0} chars")
+                print(f"    Links found: {len(content.links) if content.links else 0}")
+                print(f"    Images found: {len(content.images) if content.images else 0}")
 
         if not extraction_result.success:
             self.logger.warning(
@@ -665,6 +825,11 @@ class MLNewsMonitor:
 
         # Save new embedding
         await self._save_embedding(url, current_embedding)
+
+        if self.config.verbose:
+            print(f"\n[11] SAVED STATE")
+            print(f"    Embedding saved: Yes")
+            print(f"    Training samples collected: {len(self._training_data)}")
 
         # Create ML change record
         change = MLContentChange(
@@ -682,6 +847,20 @@ class MLNewsMonitor:
         )
 
         self._change_history.append(change)
+
+        # Verbose: Final summary
+        if self.config.verbose:
+            print(f"\n{'='*70}")
+            print(f"  RESULT SUMMARY")
+            print(f"{'='*70}")
+            print(f"    URL: {url}")
+            print(f"    Change type: {change_type}")
+            print(f"    Embedding similarity: {change.embedding_similarity:.2%}")
+            print(f"    Page type (ML): {page_type_ml} ({page_type_confidence:.0%})")
+            print(f"    Extraction success: {extraction_result.success}")
+            print(f"    LLM description: {'Yes' if llm_description else 'No'}")
+            print(f"    Total changes in history: {len(self._change_history)}")
+            print(f"{'='*70}\n")
 
         return change
 
@@ -892,9 +1071,9 @@ async def main() -> None:
         help="Run once and exit (don't loop)",
     )
     parser.add_argument(
-        "--verbose",
+        "--verbose", "-v",
         action="store_true",
-        help="Enable verbose logging",
+        help="Enable verbose output showing detailed processing steps",
     )
     parser.add_argument(
         "--install-redis",
@@ -997,6 +1176,7 @@ async def main() -> None:
         llm_model=args.llm_model,
         ollama_api_key=args.ollama_api_key,
         ollama_base_url=args.ollama_url,
+        verbose=args.verbose,
     )
 
     print("""
@@ -1029,6 +1209,7 @@ async def main() -> None:
     print(f"  Classifier: {config.classifier_type}")
     print(f"  Breaking threshold: {config.breaking_threshold}")
     print(f"  LLM provider: {config.llm_provider}")
+    print(f"  Verbose mode: {'ENABLED' if config.verbose else 'disabled'}")
     print()
 
     # Check Redis
