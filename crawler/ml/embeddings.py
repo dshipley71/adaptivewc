@@ -316,10 +316,10 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
     - openai: OpenAI API (requires OPENAI_API_KEY)
     - anthropic: Anthropic API (requires ANTHROPIC_API_KEY)
     - ollama: Local Ollama instance (default: http://localhost:11434)
-    - ollama-cloud: Ollama cloud service (default: https://ollama.com/v1)
-        - Uses OpenAI-compatible API format
+    - ollama-cloud: Ollama cloud service (default: https://ollama.com)
+        - Uses native Ollama API format at /api/chat
         - Models should have -cloud suffix (e.g., gemma3:12b-cloud)
-        - API key can be empty for public endpoints
+        - API key required - get from https://ollama.com settings
     """
 
     # Default models for each provider
@@ -333,8 +333,8 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
 
     # Default Ollama endpoints
     OLLAMA_LOCAL_URL = "http://localhost:11434"
-    # Ollama cloud uses OpenAI-compatible endpoint format
-    OLLAMA_CLOUD_URL = "https://ollama.com/v1"
+    # Ollama cloud uses native Ollama API format at /api/chat
+    OLLAMA_CLOUD_URL = "https://ollama.com"
 
     def __init__(
         self,
@@ -399,11 +399,11 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
                 raise ImportError("httpx package required: pip install httpx")
 
         elif self.provider == "ollama-cloud":
-            # Ollama cloud - uses OpenAI-compatible API format
-            # API key can be empty string for public endpoints
+            # Ollama cloud - uses native Ollama API format at /api/chat
+            # API key required for authentication
             try:
                 import httpx
-                # API key can be empty (some Ollama cloud endpoints don't require it)
+                # API key from parameter or environment variable
                 api_key = self.api_key if self.api_key is not None else os.environ.get("OLLAMA_API_KEY", "")
                 base_url = self.ollama_base_url or os.environ.get("OLLAMA_BASE_URL", self.OLLAMA_CLOUD_URL)
                 self._client = {"base_url": base_url, "api_key": api_key, "httpx": httpx}
@@ -423,15 +423,21 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
         if client.get("api_key"):
             headers["Authorization"] = f"Bearer {client['api_key']}"
 
-        # Ollama Cloud uses OpenAI-compatible API format
+        # Both local Ollama and Ollama Cloud use native Ollama API format
+        # Ollama Cloud: https://ollama.com/api/chat
+        # Local Ollama: http://localhost:11434/api/generate
         if self.provider == "ollama-cloud":
+            # Ollama Cloud uses /api/chat with messages format
             payload = {
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": 0.3,
+                "stream": False,
+                "options": {
+                    "num_predict": max_tokens,
+                    "temperature": 0.3,
+                },
             }
-            endpoint = f"{base_url}/chat/completions"
+            endpoint = f"{base_url}/api/chat"
             response = httpx.post(
                 endpoint,
                 json=payload,
@@ -440,9 +446,10 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
             )
             response.raise_for_status()
             result = response.json()
-            return result["choices"][0]["message"]["content"].strip()
+            # Ollama chat response format: {"message": {"content": "..."}}
+            return result.get("message", {}).get("content", "").strip()
         else:
-            # Local Ollama uses native API format
+            # Local Ollama uses /api/generate with prompt format
             payload = {
                 "model": self.model,
                 "prompt": prompt,
