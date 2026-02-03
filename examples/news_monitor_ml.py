@@ -516,7 +516,15 @@ class MLNewsMonitor:
 
         return None
 
-    async def check_url(self, url: str) -> MLContentChange | None:
+    def _save_html(self, html_content: str, domain: str):
+      timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+      filepath = Path(self.config.output_dir) / f"raw_html_change_{timestamp}.html"
+
+      with open(filepath, "w", encoding="utf-8") as f:
+          f.write(html_content)
+      self.logger.info("Saving HTML to file, changes detected")
+
+    async def check_url(self, url: str, save_html: bool) -> MLContentChange | None:
         """
         Check a URL for changes using ML-based detection.
 
@@ -593,8 +601,16 @@ class MLNewsMonitor:
             print(f"\n[4] COMPARISON WITH PREVIOUS")
             print(f"    Has previous embedding: {previous_embedding is not None}")
 
+        if not previous_embedding and save_html:
+          self.logger.info("First scrape, saving off HTML")
+          self._save_html(html, domain)
+
         # ML: Compute similarity using embeddings
         if previous_embedding:
+            if save_html:
+              self.logger.info("change detected, saving off HTML")
+              self._save_html(html, domain)
+
             similarity = self.embedding_model.compute_similarity(
                 previous_embedding, current_embedding
             )
@@ -864,12 +880,12 @@ class MLNewsMonitor:
 
         return change
 
-    async def check_all_urls(self) -> list[MLContentChange]:
+    async def check_all_urls(self, save_html: bool) -> list[MLContentChange]:
         """Check all configured URLs for changes."""
         changes = []
 
         for url in self.config.urls:
-            change = await self.check_url(url)
+            change = await self.check_url(url, save_html)
             if change:
                 changes.append(change)
 
@@ -880,7 +896,7 @@ class MLNewsMonitor:
 
         return changes
 
-    async def run_monitoring_loop(self) -> None:
+    async def run_monitoring_loop(self, save_html: bool) -> None:
         """Run continuous monitoring loop."""
         self._running = True
         self.logger.info(
@@ -891,7 +907,7 @@ class MLNewsMonitor:
 
         while self._running:
             try:
-                changes = await self.check_all_urls()
+                changes = await self.check_all_urls(save_html)
 
                 if changes:
                     self.logger.info(
@@ -1004,11 +1020,11 @@ class MLNewsMonitor:
         """Get the change history."""
         return self._change_history.copy()
 
-    async def run_once(self) -> list[MLContentChange]:
+    async def run_once(self, save_html: bool) -> list[MLContentChange]:
         """Run a single check cycle (useful for testing)."""
         await self.start()
         try:
-            return await self.check_all_urls()
+            return await self.check_all_urls(save_html)
         finally:
             await self.stop()
 
@@ -1069,6 +1085,11 @@ async def main() -> None:
         "--once",
         action="store_true",
         help="Run once and exit (don't loop)",
+    )
+    parser.add_argument(
+        "--save_html",
+        action="store_true",
+        help="If this flag is included, raw HTML will be saved upon change or initial scrape to a 'raw_html' subfolder.",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -1275,18 +1296,18 @@ async def main() -> None:
 
         if args.export_data:
             print("\nCollecting and exporting training data...")
-            await monitor.check_all_urls()
+            await monitor.check_all_urls(args.save_html)
             path = monitor.export_training_data()
             print(f"\nExported training data to: {path}")
             return
 
         if args.once:
             print("\nRunning single ML check...")
-            changes = await monitor.check_all_urls()
+            changes = await monitor.check_all_urls(args.save_html)
             print(f"\nDetected {len(changes)} ML change(s)")
         else:
             print("\nStarting continuous ML monitoring (Ctrl+C to stop)...")
-            await monitor.run_monitoring_loop()
+            await monitor.run_monitoring_loop(args.save_html)
 
     except KeyboardInterrupt:
         print("\n\nStopping ML monitor...")
