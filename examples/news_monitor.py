@@ -582,18 +582,23 @@ class NewsMonitor:
 
             data.append(record)
 
-            csv_output.append(",".join(
-              [
-                change.url, 
-                timestamp, 
-                filepath,
-                change.change_type,
-                change.similarity_score,
-                change.change_analysis.classification if change.change_analysis else None,
-                change.change_analysis.requires_relearning if change.change_analysis else None,
-              ]
-            ))
-            self.logger.info(f"====> to csv will look like: {csv_output})")
+            try:
+              csv_output.append(",".join(
+                  [
+                    change.url, 
+                    timestamp, 
+                    str(filepath),
+                    change.change_type,
+                    f"{change.similarity_score:.3%}",
+                    str(change.change_analysis.classification if change.change_analysis else None),
+                    str(change.change_analysis.requires_relearning if change.change_analysis else None),
+                  ]
+                ))
+              self.logger.info(f"====> to csv will look like: {csv_output})")
+            except Exception as e:
+              self.logger.warning(f"===> error in writing out CSV: {e}")
+
+                
 
         with open(filepath, "w") as f:
             json.dump(data, f, indent=2, default=str)
