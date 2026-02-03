@@ -391,7 +391,15 @@ class NewsMonitor:
 
         return None
 
-    async def check_url(self, url: str) -> ContentChange | None:
+    def _save_html(self, html_content: str, domain: str):
+      timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+      filepath = Path(self.config.output_dir) / f"raw_html_change_{timestamp}.html"
+
+      with open(filepath, "w", encoding="utf-8") as f:
+          f.write(html_content)
+      self.logger.info("Saving HTML to file, changes detected")
+
+    async def check_url(self, url: str, save_html: bool) -> ContentChange | None:
         """
         Check a URL for changes.
 
@@ -418,9 +426,17 @@ class NewsMonitor:
         current_hash = self._compute_structure_fingerprint(current_structure)
         previous_hash = self._content_hashes.get(url)
 
+        if not previous_hash and save_html:
+          self.logger.info("First scrape, saving off HTML")
+          self._save_html(html, domain)
+          
         if previous_hash and previous_hash == current_hash:
             self.logger.debug("No structural changes", url=url)
             return None
+
+        if save_html:
+          self.logger.info("change detected, saving off HTML")
+          self._save_html(html, domain)
 
         assert self.structure_store is not None
         stored_structure = await self.structure_store.get_structure(
@@ -499,12 +515,12 @@ class NewsMonitor:
 
         return change
 
-    async def check_all_urls(self) -> list[ContentChange]:
+    async def check_all_urls(self, save_html: bool) -> list[ContentChange]:
         """Check all configured URLs for changes."""
         changes = []
 
         for url in self.config.urls:
-            change = await self.check_url(url)
+            change = await self.check_url(url, save_html)
             if change:
                 changes.append(change)
 
@@ -515,7 +531,7 @@ class NewsMonitor:
 
         return changes
 
-    async def run_monitoring_loop(self) -> None:
+    async def run_monitoring_loop(self, save_html: bool = False) -> None:
         """Run continuous monitoring loop."""
         self._running = True
         self.logger.info(
@@ -526,7 +542,7 @@ class NewsMonitor:
 
         while self._running:
             try:
-                changes = await self.check_all_urls()
+                changes = await self.check_all_urls(save_html)
 
                 if changes:
                     self.logger.info(
@@ -547,8 +563,10 @@ class NewsMonitor:
         """Save detected changes to a JSON file."""
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         filepath = Path(self.config.output_dir) / f"news_changes_{timestamp}.json"
+        csv_path = Path(self.config.output_dir) / f"changes_tracker.csv"
 
         data = []
+        csv_output = []
         for change in changes:
             record = change.to_dict()
 
@@ -564,11 +582,32 @@ class NewsMonitor:
 
             data.append(record)
 
+            csv_output.append(",".join(
+              [
+                change.url, 
+                timestamp, 
+                filepath,
+                change.change_type,
+                change.similarity_score,
+                change.change_analysis.classification if change.change_analysis else None,
+                change.change_analysis.requires_relearning if change.change_analysis else None,
+              ]
+            ))
+            self.logger.info(f"====> to csv will look like: {csv_output})")
+
         with open(filepath, "w") as f:
             json.dump(data, f, indent=2, default=str)
+          
+        with open(csv_path, 'a') as f:
+          if not os.path.exists(csv_path):
+            # Write headers first
+            f.write('url,datetime,filepath,change_type,similarity_score,classification,requires_relearning\n')
+          for row in csv_output:
+            f.write(f'{row}\n')
 
         self.logger.info("Saved changes to file", filepath=str(filepath))
 
+        
     def get_change_history(self) -> list[ContentChange]:
         """Get the change history."""
         return self._change_history.copy()
@@ -640,6 +679,11 @@ async def main() -> None:
         "--install-redis",
         action="store_true",
         help="Install Redis locally (Debian/Ubuntu) and exit",
+    )
+    parser.add_argument(
+        "--save_html",
+        action="store_true",
+        help="If this flag is included, raw HTML will be saved upon change or initial scrape to a 'raw_html' subfolder.",
     )
 
     args = parser.parse_args()
@@ -722,11 +766,11 @@ async def main() -> None:
 
         if args.once:
             print("\nRunning single check...")
-            changes = await monitor.check_all_urls()
+            changes = await monitor.check_all_urls(args.save_html)
             print(f"\nDetected {len(changes)} change(s)")
         else:
             print("\nStarting continuous monitoring (Ctrl+C to stop)...")
-            await monitor.run_monitoring_loop()
+            await monitor.run_monitoring_loop(args.save_html)
 
     except KeyboardInterrupt:
         print("\n\nStopping monitor...")
