@@ -601,16 +601,9 @@ class MLNewsMonitor:
             print(f"\n[4] COMPARISON WITH PREVIOUS")
             print(f"    Has previous embedding: {previous_embedding is not None}")
 
-        if not previous_embedding and save_html:
-          self.logger.info("First scrape, saving off HTML")
-          self._save_html(html, domain)
-
         # ML: Compute similarity using embeddings
         if previous_embedding:
-            if save_html:
-              self.logger.info("change detected, saving off HTML")
-              self._save_html(html, domain)
-
+            
             similarity = self.embedding_model.compute_similarity(
                 previous_embedding, current_embedding
             )
@@ -638,10 +631,16 @@ class MLNewsMonitor:
                 return None
         else:
             similarity = 0.0
+            if save_html:
+              self._save_html(html, domain)
             if self.config.verbose:
                 print(f"    No previous embedding - this is a NEW page")
+
                 print(f"    Similarity set to: 0.0 (new baseline)")
 
+        if save_html:
+            self.logger.info("change detected, saving off HTML")
+            self._save_html(html, domain)
         # ML: Classify page type using ML
         page_type_ml, page_type_confidence = self._classify_page_type_ml(current_structure, url)
 
@@ -928,8 +927,10 @@ class MLNewsMonitor:
         """Save detected changes to a JSON file."""
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         filepath = Path(self.config.output_dir) / f"news_ml_changes_{timestamp}.json"
+        csv_path = Path(self.config.output_dir) / f"changes_tracker.csv"
 
         data = []
+        csv_output = []
         for change in changes:
             record = change.to_dict()
 
@@ -945,8 +946,33 @@ class MLNewsMonitor:
 
             data.append(record)
 
+            try:
+              csv_output.append(",".join(
+                  [
+                    change.url, 
+                    timestamp, 
+                    str(filepath),
+                    change.change_type,
+                    f"{change.embedding_similarity:.3%}",
+                    str(change.change_analysis.classification if change.change_analysis else None),
+                    str(change.change_analysis.requires_relearning if change.change_analysis else None),
+                    change.llm_description
+                  ]
+                ))
+              self.logger.info(f"====> to csv will look like: {csv_output})")
+            except Exception as e:
+              self.logger.warning(f"===> error in writing out CSV: {e}")
+
+
         with open(filepath, "w") as f:
             json.dump(data, f, indent=2, default=str)
+
+        with open(csv_path, 'a') as f:
+          if not os.path.exists(csv_path):
+            # Write headers first
+            f.write('url,datetime,filepath,change_type,similarity_score,classification,requires_relearning,llm_description\n')
+          for row in csv_output:
+            f.write(f'{row}\n')
 
         self.logger.info("Saved ML changes to file", filepath=str(filepath))
 
