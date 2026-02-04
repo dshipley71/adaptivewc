@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Adaptive Web Crawler - Executive Summary</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            font-size: 12px;
+            line-height: 1.4;
+            color: #333;
+            background: #fafafa;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; background: white; }
+
+        /* Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 20px;
+            border-bottom: 3px solid #1a237e;
+        }
+        .header h1 {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: #1a237e;
+        }
+        .version {
+            background: #e8eaf6;
+            color: #666;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 0.65rem;
+        }
+
+        /* KPI Row */
+        .kpi-row {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 10px;
+            padding: 20px;
+        }
+        .kpi-card {
+            background: linear-gradient(135deg, #1a237e 0%, #3949ab 100%);
+            color: white;
+            padding: 12px;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .kpi-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .kpi-label {
+            font-size: 0.6rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            opacity: 0.9;
+        }
+
+        /* Cards */
+        .card {
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            margin: 10px 20px;
+            overflow: hidden;
+        }
+        .card-title {
+            background: #f5f5f5;
+            padding: 8px 12px;
+            font-weight: 600;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .card-content { padding: 12px; }
+
+        /* Phase Legend */
+        .phase-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 12px;
+            font-size: 0.65rem;
+        }
+        .phase-item { display: flex; align-items: center; gap: 4px; }
+        .phase-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        /* Grid Layouts */
+        .three-col {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            padding: 10px 20px;
+        }
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            padding: 10px 20px;
+        }
+
+        /* Capabilities List */
+        .capabilities-list {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            font-size: 0.65rem;
+        }
+        .capability-item { display: flex; align-items: flex-start; gap: 6px; }
+        .capability-item::before {
+            content: "✓";
+            color: #4caf50;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+
+        /* Tech Stack */
+        .tech-section { margin-bottom: 12px; }
+        .tech-section-title {
+            font-weight: 600;
+            font-size: 0.65rem;
+            margin-bottom: 6px;
+            color: #1a237e;
+        }
+        .tech-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        .tech-badge {
+            background: #e8eaf6;
+            color: #1a237e;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 0.6rem;
+            display: inline-block;
+        }
+
+        /* Footer */
+        .footer {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 20px;
+            border-top: 1px solid #e0e0e0;
+            font-size: 0.65rem;
+            color: #666;
+            margin-top: 20px;
+        }
+
+        /* Mermaid Diagrams */
+        .mermaid {
+            display: flex;
+            justify-content: center;
+            margin: 10px 0;
+        }
+
+        /* Responsive */
+        @media (max-width: 900px) {
+            .kpi-row { grid-template-columns: repeat(3, 1fr); }
+            .three-col { grid-template-columns: 1fr; }
+            .two-col { grid-template-columns: 1fr; }
+        }
+        @media print {
+            body { background: white; padding: 0; }
+            .card { page-break-inside: avoid; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>Adaptive Web Crawler</h1>
+            <div class="version">Version 0.1.0 | Python 3.11+</div>
+        </div>
+
+        <!-- KPI Row -->
+        <div class="kpi-row">
+            <div class="kpi-card">
+                <div class="kpi-value">8+</div>
+                <div class="kpi-label">Core Modules</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value">100%</div>
+                <div class="kpi-label">Compliance Coverage</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value">3</div>
+                <div class="kpi-label">Legal Frameworks</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value">ML-Based</div>
+                <div class="kpi-label">Structure Learning</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value">Redis</div>
+                <div class="kpi-label">State Persistence</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value">Auto</div>
+                <div class="kpi-label">Rate Adaptation</div>
+            </div>
+        </div>
+
+        <!-- Compliance Pipeline -->
+        <div class="card">
+            <div class="card-title">Compliance-First Fetch Pipeline</div>
+            <div class="card-content">
+                <div class="phase-legend">
+                    <div class="phase-item"><span class="phase-dot" style="background: #e3f2fd; border: 2px solid #2196f3;"></span>Authorization</div>
+                    <div class="phase-item"><span class="phase-dot" style="background: #fff3e0; border: 2px solid #ff9800;"></span>Robots Check</div>
+                    <div class="phase-item"><span class="phase-dot" style="background: #e8f5e9; border: 2px solid #4caf50;"></span>Rate Limiting</div>
+                    <div class="phase-item"><span class="phase-dot" style="background: #f3e5f5; border: 2px solid #9c27b0;"></span>HTTP Fetch</div>
+                    <div class="phase-item"><span class="phase-dot" style="background: #fce4ec; border: 2px solid #e91e63;"></span>GDPR/PII Check</div>
+                    <div class="phase-item"><span class="phase-dot" style="background: #e0f7fa; border: 2px solid #00bcd4;"></span>Content Extract</div>
+                </div>
+                <div class="mermaid">
+flowchart LR
+    A[URL Request] --> B{CFAA Auth Check}
+    B -->|Unauthorized| X1[Block & Log]
+    B -->|Authorized| C{robots.txt Check}
+    C -->|Blocked| X2[Respect & Skip]
+    C -->|Allowed| D{Rate Limit}
+    D -->|Wait| D
+    D -->|Ready| E[HTTP Fetch]
+    E --> F{GDPR/PII Scan}
+    F -->|Sensitive PII| G[Redact/Pseudonymize]
+    F -->|Clean| H[Extract Content]
+    G --> H
+    H --> I[Store Result]
+
+    style B fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    style C fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style D fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+    style E fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    style F fill:#fce4ec,stroke:#e91e63,stroke-width:2px
+    style H fill:#e0f7fa,stroke:#00bcd4,stroke-width:2px
+    style X1 fill:#ffebee,stroke:#f44336,stroke-width:2px
+    style X2 fill:#ffebee,stroke:#f44336,stroke-width:2px
+                </div>
+            </div>
+        </div>
+
+        <!-- Three Column Architecture -->
+        <div class="three-col">
+            <!-- Adaptive Extraction -->
+            <div class="card">
+                <div class="card-title">Adaptive Extraction</div>
+                <div class="card-content">
+                    <div class="mermaid">
+flowchart TD
+    A[HTML Content] --> B{Structure<br/>in Cache?}
+    B -->|No| C[Analyze Structure]
+    B -->|Yes| D{Structure<br/>Changed?}
+    C --> E[Learn Strategy]
+    E --> F[Cache Strategy]
+    D -->|No| G[Use Cached<br/>Strategy]
+    D -->|Yes| H[Detect Changes]
+    H --> I[Adapt Strategy]
+    I --> J[Update Cache]
+    F --> K[Extract Content]
+    G --> K
+    J --> K
+    K --> L[Validate Quality]
+
+    style C fill:#e3f2fd,stroke:#2196f3
+    style E fill:#fff3e0,stroke:#ff9800
+    style H fill:#fce4ec,stroke:#e91e63
+    style I fill:#f3e5f5,stroke:#9c27b0
+    style L fill:#e8f5e9,stroke:#4caf50
+                    </div>
+                </div>
+            </div>
+
+            <!-- State Management -->
+            <div class="card">
+                <div class="card-title">State Persistence (Redis)</div>
+                <div class="card-content">
+                    <div class="mermaid">
+flowchart TD
+    A[Crawler State] --> B[URL Frontier<br/>ZSET]
+    A --> C[Visited URLs<br/>Bloom Filter]
+    A --> D[Domain State<br/>Hash]
+    A --> E[Structure Cache<br/>JSON]
+    B --> F[Priority Queue]
+    C --> G[Deduplication]
+    D --> H[Rate Delays<br/>Circuit Breakers]
+    E --> I[Extraction<br/>Strategies]
+    F --> J[Crash Recovery]
+    G --> J
+    H --> J
+    I --> J
+
+    style B fill:#e3f2fd,stroke:#2196f3
+    style C fill:#fff3e0,stroke:#ff9800
+    style D fill:#e8f5e9,stroke:#4caf50
+    style E fill:#f3e5f5,stroke:#9c27b0
+    style J fill:#fce4ec,stroke:#e91e63
+                    </div>
+                </div>
+            </div>
+
+            <!-- Legal Compliance -->
+            <div class="card">
+                <div class="card-title">Legal Compliance</div>
+                <div class="card-content">
+                    <div class="mermaid">
+flowchart TD
+    A[Data Processing] --> B{CFAA<br/>Authorized?}
+    B -->|No| X[Block Access]
+    B -->|Yes| C{GDPR<br/>Applies?}
+    C -->|Yes| D[Data<br/>Minimization]
+    D --> E[PII Detection]
+    E --> F{Contains<br/>PII?}
+    F -->|Yes| G[Redact/<br/>Pseudonymize]
+    F -->|No| H[Store]
+    G --> H
+    C -->|No| I{CCPA<br/>Applies?}
+    I -->|Yes| J[Honor<br/>GPC Signal]
+    I -->|No| H
+    J --> H
+    H --> K[Retention<br/>Enforcement]
+
+    style B fill:#e3f2fd,stroke:#2196f3
+    style D fill:#fff3e0,stroke:#ff9800
+    style E fill:#e8f5e9,stroke:#4caf50
+    style G fill:#fce4ec,stroke:#e91e63
+    style K fill:#f3e5f5,stroke:#9c27b0
+    style X fill:#ffebee,stroke:#f44336
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Architecture Overview -->
+        <div class="card">
+            <div class="card-title">Module Architecture</div>
+            <div class="card-content">
+                <div class="mermaid">
+flowchart TB
+    subgraph Core["Core Modules"]
+        A[Crawler Orchestrator]
+        B[URL Scheduler]
+        C[HTTP Fetcher]
+        D[State Manager]
+    end
+
+    subgraph Compliance["Compliance Layer"]
+        E[Robots Parser]
+        F[Rate Limiter]
+        G[Bot Detection]
+        H[ToS Detector]
+    end
+
+    subgraph Legal["Legal Framework"]
+        I[CFAA Checker]
+        J[GDPR Handler]
+        K[CCPA Handler]
+        L[PII Detector]
+    end
+
+    subgraph Adaptive["Adaptive Extraction"]
+        M[Structure Analyzer]
+        N[Change Detector]
+        O[Strategy Learner]
+        P[Change Logger]
+    end
+
+    subgraph Storage["Storage Layer"]
+        Q[Redis Cache]
+        R[SQLite Store]
+        S[Content Store]
+    end
+
+    subgraph Utils["Utilities"]
+        T[Deduplication]
+        U[Alerting]
+        V[Metrics]
+    end
+
+    A --> B
+    B --> C
+    C --> E
+    C --> F
+    C --> I
+    C --> J
+    C --> K
+    E --> M
+    M --> N
+    N --> O
+    O --> Q
+    C --> S
+    D --> R
+    M --> Q
+    S --> T
+    N --> U
+    A --> V
+
+    style Core fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    style Compliance fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style Legal fill:#fce4ec,stroke:#e91e63,stroke-width:2px
+    style Adaptive fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    style Storage fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+    style Utils fill:#e0f7fa,stroke:#00bcd4,stroke-width:2px
+                </div>
+            </div>
+        </div>
+
+        <!-- Key Capabilities and Tech Stack -->
+        <div class="two-col">
+            <!-- Capabilities -->
+            <div class="card">
+                <div class="card-title">Key Capabilities</div>
+                <div class="card-content">
+                    <div class="capabilities-list">
+                        <div class="capability-item">robots.txt compliance with caching</div>
+                        <div class="capability-item">Adaptive rate limiting per domain</div>
+                        <div class="capability-item">CFAA authorization verification</div>
+                        <div class="capability-item">GDPR/CCPA legal compliance</div>
+                        <div class="capability-item">ML-based structure learning</div>
+                        <div class="capability-item">Automatic change detection</div>
+                        <div class="capability-item">PII detection & redaction</div>
+                        <div class="capability-item">Content deduplication (SimHash)</div>
+                        <div class="capability-item">Circuit breaker patterns</div>
+                        <div class="capability-item">Crash recovery & checkpoints</div>
+                        <div class="capability-item">Terms of Service detection</div>
+                        <div class="capability-item">Anti-bot measure respect</div>
+                        <div class="capability-item">Data retention enforcement</div>
+                        <div class="capability-item">Subject access request handling</div>
+                        <div class="capability-item">Prometheus metrics export</div>
+                        <div class="capability-item">Structured JSON logging</div>
+                        <div class="capability-item">Slack/Email alerting</div>
+                        <div class="capability-item">Extraction quality validation</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tech Stack -->
+            <div class="card">
+                <div class="card-title">Technology Stack</div>
+                <div class="card-content">
+                    <div class="tech-section">
+                        <div class="tech-section-title">HTTP & Parsing</div>
+                        <div class="tech-badges">
+                            <span class="tech-badge">httpx (HTTP/2)</span>
+                            <span class="tech-badge">BeautifulSoup4</span>
+                            <span class="tech-badge">lxml</span>
+                            <span class="tech-badge">asyncio</span>
+                        </div>
+                    </div>
+
+                    <div class="tech-section">
+                        <div class="tech-section-title">Storage & Caching</div>
+                        <div class="tech-badges">
+                            <span class="tech-badge">Redis</span>
+                            <span class="tech-badge">SQLite (aiosqlite)</span>
+                            <span class="tech-badge">Bloom Filter</span>
+                        </div>
+                    </div>
+
+                    <div class="tech-section">
+                        <div class="tech-section-title">Machine Learning</div>
+                        <div class="tech-badges">
+                            <span class="tech-badge">LightGBM</span>
+                            <span class="tech-badge">Sentence Transformers</span>
+                            <span class="tech-badge">NumPy</span>
+                            <span class="tech-badge">scikit-learn</span>
+                        </div>
+                    </div>
+
+                    <div class="tech-section">
+                        <div class="tech-section-title">Configuration & Validation</div>
+                        <div class="tech-badges">
+                            <span class="tech-badge">Pydantic</span>
+                            <span class="tech-badge">Click CLI</span>
+                            <span class="tech-badge">Rich (Output)</span>
+                        </div>
+                    </div>
+
+                    <div class="tech-section">
+                        <div class="tech-section-title">Monitoring & Alerting</div>
+                        <div class="tech-badges">
+                            <span class="tech-badge">Prometheus</span>
+                            <span class="tech-badge">structlog</span>
+                            <span class="tech-badge">Slack SDK</span>
+                            <span class="tech-badge">SendGrid</span>
+                        </div>
+                    </div>
+
+                    <div class="tech-section">
+                        <div class="tech-section-title">Optional Extensions</div>
+                        <div class="tech-badges">
+                            <span class="tech-badge">Playwright (JS)</span>
+                            <span class="tech-badge">OpenAI</span>
+                            <span class="tech-badge">Anthropic</span>
+                            <span class="tech-badge">XGBoost</span>
+                        </div>
+                    </div>
+
+                    <div class="tech-section">
+                        <div class="tech-section-title">Testing & Quality</div>
+                        <div class="tech-badges">
+                            <span class="tech-badge">pytest</span>
+                            <span class="tech-badge">mypy (strict)</span>
+                            <span class="tech-badge">ruff</span>
+                            <span class="tech-badge">90%+ coverage</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Rate Limiting Strategy -->
+        <div class="card">
+            <div class="card-title">Adaptive Rate Limiting Strategy</div>
+            <div class="card-content">
+                <div class="mermaid">
+flowchart LR
+    A[Request Ready] --> B{Get Domain<br/>Delay}
+    B --> C{Crawl-delay<br/>in robots.txt?}
+    C -->|Yes| D[Use Crawl-delay]
+    C -->|No| E[Use Default<br/>1.0s]
+    D --> F{Acquire<br/>Rate Slot}
+    E --> F
+    F --> G[Execute Request]
+    G --> H{Response<br/>Code?}
+    H -->|200 OK| I[Maintain Rate]
+    H -->|429/503| J[Backoff × 2<br/>Respect Retry-After]
+    H -->|5xx| K[Backoff × 1.5]
+    H -->|Timeout| L[Backoff × 1.5<br/>Reduce Concurrency]
+    I --> M[Next Request]
+    J --> N[Update Domain<br/>Delay]
+    K --> N
+    L --> N
+    N --> M
+
+    style C fill:#e3f2fd,stroke:#2196f3
+    style F fill:#e8f5e9,stroke:#4caf50
+    style H fill:#fff3e0,stroke:#ff9800
+    style J fill:#fce4ec,stroke:#e91e63
+    style K fill:#fce4ec,stroke:#e91e63
+    style L fill:#fce4ec,stroke:#e91e63
+                </div>
+            </div>
+        </div>
+
+        <!-- Legal Compliance Frameworks -->
+        <div class="card">
+            <div class="card-title">Legal Compliance Framework Coverage</div>
+            <div class="card-content">
+                <div class="two-col" style="padding: 0;">
+                    <div>
+                        <div style="font-weight: 600; font-size: 0.7rem; margin-bottom: 8px; color: #1a237e;">CFAA Compliance</div>
+                        <div style="font-size: 0.65rem; line-height: 1.6;">
+                            • Authorization verification before access<br/>
+                            • robots.txt as authorization scope<br/>
+                            • ToS detection and respect<br/>
+                            • Anti-bot measures never circumvented<br/>
+                            • Cease & desist immediate response<br/>
+                            • Comprehensive audit logging<br/>
+                            • Rate limiting prevents "damage" claims
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 0.7rem; margin-bottom: 8px; color: #1a237e;">GDPR/CCPA Compliance</div>
+                        <div style="font-size: 0.65rem; line-height: 1.6;">
+                            • Data minimization (Article 5(1)(c))<br/>
+                            • PII detection and redaction/pseudonymization<br/>
+                            • Automated retention enforcement<br/>
+                            • Data subject access requests (Article 15)<br/>
+                            • Right to erasure (Article 17)<br/>
+                            • Right to rectification (Article 16)<br/>
+                            • Right to data portability (Article 20)<br/>
+                            • Global Privacy Control (GPC) support<br/>
+                            • Breach notification procedures
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <div>
+                <strong>Adaptive Web Crawler</strong> v0.1.0<br/>
+                Ethical, compliant, and intelligent web data collection with ML-based adaptation
+            </div>
+            <div style="text-align: right;">
+                Generated: 2026-02-04<br/>
+                Python 3.11+ | MIT License
+            </div>
+        </div>
+    </div>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+    </script>
+</body>
+</html>
