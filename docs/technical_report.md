@@ -76,7 +76,7 @@ The system follows a modular pipeline architecture with clear separation of conc
 │                      STORAGE & STATE                                 │
 │   ┌──────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────┐     │
 │   │  Redis   │  │ URL Store    │  │  Structure   │  │  Robots  │     │
-│   │  Queue   │  │ (Bloom+SQLite)│  │    Cache     │  │  Cache  │     │
+│   │  Queue   │  │(Bloom+SQLite)│  │    Cache     │  │  Cache   │     │
 │   └──────────┘  └──────────────┘  └──────────────┘  └──────────┘     │
 └──────────────────────────────────────────────────────────────────────┘
                                     │
