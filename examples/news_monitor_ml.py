@@ -445,6 +445,8 @@ class MLNewsMonitor:
             return "business"
         elif any(p in url_lower for p in ["/tech", "/technology", "/science"]):
             return "technology"
+        elif any(p in url_lower for p in ["/sport", "/esport", "/football", "/soccer", "/basketball", "/baseball", "/hockey", "/tennis", "/golf", "/athletics", "/cricket", "/fifa", "/olympics", ]):
+            return "technology"
         elif any(p in url_lower for p in ["/world", "/international", "/global"]):
             return "world"
         elif any(p in url_lower for p in ["/entertainment", "/celebrity", "/culture"]):
@@ -1309,7 +1311,7 @@ async def main() -> None:
 
         if args.train_classifier:
             print("\nTraining classifier on collected data...")
-            await monitor.check_all_urls()
+            await monitor.check_all_urls(args.save_html)
             metrics = monitor.train_classifier()
             if metrics:
                 print(f"\nTraining complete!")
