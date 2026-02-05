@@ -980,9 +980,10 @@ class MLNewsMonitor:
 
     def train_classifier(self, min_samples_per_class: int = 5) -> dict[str, Any] | None:
         """Train the page type classifier on collected data."""
+
         if len(self._training_data) < 10:
             self.logger.warning(
-                "Insufficient training data",
+                "Insufficient training data}",
                 samples=len(self._training_data),
             )
             return None
@@ -1264,7 +1265,7 @@ async def main() -> None:
     # Check Redis
     print("Checking prerequisites...")
     try:
-        redis_client = redis.from_url(config.redis_url)
+        redis_client = redis.from_url(config.redis_url, decode_responses=True)
         await redis_client.ping()
         await redis_client.aclose()
         print("  [OK] Redis is running")
@@ -1310,17 +1311,27 @@ async def main() -> None:
         await monitor.start()
 
         if args.train_classifier:
-            print("\nTraining classifier on collected data...")
-            await monitor.check_all_urls(args.save_html)
-            metrics = monitor.train_classifier()
-            if metrics:
-                print(f"\nTraining complete!")
-                print(f"  Accuracy: {metrics['accuracy']:.2%}")
-                print(f"  Samples: {metrics['num_samples']}")
-                print(f"  Classes: {metrics['num_classes']}")
-            else:
-                print("\nInsufficient data for training")
-            return
+          if not args.url: # If no URLs are provided, fetch from Redis
+              print("No URLs provided for training. Fetching all existing page structures from Redis...")
+              structure_store = StructureStore(redis_client)
+              stored_structures = await redis_client.keys("crawler:structure:*")
+              print(f"Found {len(stored_structures)} structures in Redis for training.")
+              raise
+
+              # TODO: get tags from the structures
+              # TODO: assign self._training_data to the stored structures & their tags
+              # TODO: pass this into the train_classifer?
+              print("\nTraining classifier on collected data...")
+              await monitor.check_all_urls(args.save_html)
+              metrics = monitor.train_classifier()
+              if metrics:
+                  print(f"\nTraining complete!")
+                  print(f"  Accuracy: {metrics['accuracy']:.2%}")
+                  print(f"  Samples: {metrics['num_samples']}")
+                  print(f"  Classes: {metrics['num_classes']}")
+              else:
+                  print("\nInsufficient data for training")
+              return
 
         if args.export_data:
             print("\nCollecting and exporting training data...")
@@ -1347,3 +1358,6 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+
