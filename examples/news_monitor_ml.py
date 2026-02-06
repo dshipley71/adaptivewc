@@ -445,8 +445,6 @@ class MLNewsMonitor:
             return "business"
         elif any(p in url_lower for p in ["/tech", "/technology", "/science"]):
             return "technology"
-        elif any(p in url_lower for p in ["/sport", "/esport", "/football", "/soccer", "/basketball", "/baseball", "/hockey", "/tennis", "/golf", "/athletics", "/cricket", "/fifa", "/olympics", ]):
-            return "technology"
         elif any(p in url_lower for p in ["/world", "/international", "/global"]):
             return "world"
         elif any(p in url_lower for p in ["/entertainment", "/celebrity", "/culture"]):
@@ -518,15 +516,7 @@ class MLNewsMonitor:
 
         return None
 
-    def _save_html(self, html_content: str, domain: str):
-      timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-      filepath = Path(self.config.output_dir) / f"raw_html_change_{timestamp}.html"
-
-      with open(filepath, "w", encoding="utf-8") as f:
-          f.write(html_content)
-      self.logger.info("Saving HTML to file, changes detected")
-
-    async def check_url(self, url: str, save_html: bool) -> MLContentChange | None:
+    async def check_url(self, url: str) -> MLContentChange | None:
         """
         Check a URL for changes using ML-based detection.
 
@@ -605,7 +595,6 @@ class MLNewsMonitor:
 
         # ML: Compute similarity using embeddings
         if previous_embedding:
-            
             similarity = self.embedding_model.compute_similarity(
                 previous_embedding, current_embedding
             )
@@ -633,16 +622,10 @@ class MLNewsMonitor:
                 return None
         else:
             similarity = 0.0
-            if save_html:
-              self._save_html(html, domain)
             if self.config.verbose:
                 print(f"    No previous embedding - this is a NEW page")
-
                 print(f"    Similarity set to: 0.0 (new baseline)")
 
-        if save_html:
-            self.logger.info("change detected, saving off HTML")
-            self._save_html(html, domain)
         # ML: Classify page type using ML
         page_type_ml, page_type_confidence = self._classify_page_type_ml(current_structure, url)
 
@@ -881,12 +864,12 @@ class MLNewsMonitor:
 
         return change
 
-    async def check_all_urls(self, save_html: bool) -> list[MLContentChange]:
+    async def check_all_urls(self) -> list[MLContentChange]:
         """Check all configured URLs for changes."""
         changes = []
 
         for url in self.config.urls:
-            change = await self.check_url(url, save_html)
+            change = await self.check_url(url)
             if change:
                 changes.append(change)
 
@@ -897,7 +880,7 @@ class MLNewsMonitor:
 
         return changes
 
-    async def run_monitoring_loop(self, save_html: bool) -> None:
+    async def run_monitoring_loop(self) -> None:
         """Run continuous monitoring loop."""
         self._running = True
         self.logger.info(
@@ -908,7 +891,7 @@ class MLNewsMonitor:
 
         while self._running:
             try:
-                changes = await self.check_all_urls(save_html)
+                changes = await self.check_all_urls()
 
                 if changes:
                     self.logger.info(
@@ -929,10 +912,8 @@ class MLNewsMonitor:
         """Save detected changes to a JSON file."""
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         filepath = Path(self.config.output_dir) / f"news_ml_changes_{timestamp}.json"
-        csv_path = Path(self.config.output_dir) / f"changes_tracker.csv"
 
         data = []
-        csv_output = []
         for change in changes:
             record = change.to_dict()
 
@@ -948,42 +929,16 @@ class MLNewsMonitor:
 
             data.append(record)
 
-            try:
-              csv_output.append(",".join(
-                  [
-                    change.url, 
-                    timestamp, 
-                    str(filepath),
-                    change.change_type,
-                    f"{change.embedding_similarity:.3%}",
-                    str(change.change_analysis.classification if change.change_analysis else None),
-                    str(change.change_analysis.requires_relearning if change.change_analysis else None),
-                    change.llm_description
-                  ]
-                ))
-              self.logger.info(f"====> to csv will look like: {csv_output})")
-            except Exception as e:
-              self.logger.warning(f"===> error in writing out CSV: {e}")
-
-
         with open(filepath, "w") as f:
             json.dump(data, f, indent=2, default=str)
-
-        with open(csv_path, 'a') as f:
-          if not os.path.exists(csv_path):
-            # Write headers first
-            f.write('url,datetime,filepath,change_type,similarity_score,classification,requires_relearning,llm_description\n')
-          for row in csv_output:
-            f.write(f'{row}\n')
 
         self.logger.info("Saved ML changes to file", filepath=str(filepath))
 
     def train_classifier(self, min_samples_per_class: int = 5) -> dict[str, Any] | None:
         """Train the page type classifier on collected data."""
-
         if len(self._training_data) < 10:
             self.logger.warning(
-                "Insufficient training data}",
+                "Insufficient training data",
                 samples=len(self._training_data),
             )
             return None
@@ -1049,11 +1004,11 @@ class MLNewsMonitor:
         """Get the change history."""
         return self._change_history.copy()
 
-    async def run_once(self, save_html: bool) -> list[MLContentChange]:
+    async def run_once(self) -> list[MLContentChange]:
         """Run a single check cycle (useful for testing)."""
         await self.start()
         try:
-            return await self.check_all_urls(save_html)
+            return await self.check_all_urls()
         finally:
             await self.stop()
 
@@ -1114,11 +1069,6 @@ async def main() -> None:
         "--once",
         action="store_true",
         help="Run once and exit (don't loop)",
-    )
-    parser.add_argument(
-        "--save_html",
-        action="store_true",
-        help="If this flag is included, raw HTML will be saved upon change or initial scrape to a 'raw_html' subfolder.",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -1265,7 +1215,7 @@ async def main() -> None:
     # Check Redis
     print("Checking prerequisites...")
     try:
-        redis_client = redis.from_url(config.redis_url, decode_responses=True)
+        redis_client = redis.from_url(config.redis_url)
         await redis_client.ping()
         await redis_client.aclose()
         print("  [OK] Redis is running")
@@ -1311,42 +1261,32 @@ async def main() -> None:
         await monitor.start()
 
         if args.train_classifier:
-          if not args.url: # If no URLs are provided, fetch from Redis
-              print("No URLs provided for training. Fetching all existing page structures from Redis...")
-              structure_store = StructureStore(redis_client)
-              stored_structures = await redis_client.keys("crawler:structure:*")
-              print(f"Found {len(stored_structures)} structures in Redis for training.")
-              raise
-
-              # TODO: get tags from the structures
-              # TODO: assign self._training_data to the stored structures & their tags
-              # TODO: pass this into the train_classifer?
-              print("\nTraining classifier on collected data...")
-              await monitor.check_all_urls(args.save_html)
-              metrics = monitor.train_classifier()
-              if metrics:
-                  print(f"\nTraining complete!")
-                  print(f"  Accuracy: {metrics['accuracy']:.2%}")
-                  print(f"  Samples: {metrics['num_samples']}")
-                  print(f"  Classes: {metrics['num_classes']}")
-              else:
-                  print("\nInsufficient data for training")
-              return
+            print("\nTraining classifier on collected data...")
+            await monitor.check_all_urls()
+            metrics = monitor.train_classifier()
+            if metrics:
+                print(f"\nTraining complete!")
+                print(f"  Accuracy: {metrics['accuracy']:.2%}")
+                print(f"  Samples: {metrics['num_samples']}")
+                print(f"  Classes: {metrics['num_classes']}")
+            else:
+                print("\nInsufficient data for training")
+            return
 
         if args.export_data:
             print("\nCollecting and exporting training data...")
-            await monitor.check_all_urls(args.save_html)
+            await monitor.check_all_urls()
             path = monitor.export_training_data()
             print(f"\nExported training data to: {path}")
             return
 
         if args.once:
             print("\nRunning single ML check...")
-            changes = await monitor.check_all_urls(args.save_html)
+            changes = await monitor.check_all_urls()
             print(f"\nDetected {len(changes)} ML change(s)")
         else:
             print("\nStarting continuous ML monitoring (Ctrl+C to stop)...")
-            await monitor.run_monitoring_loop(args.save_html)
+            await monitor.run_monitoring_loop()
 
     except KeyboardInterrupt:
         print("\n\nStopping ML monitor...")
@@ -1358,6 +1298,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
