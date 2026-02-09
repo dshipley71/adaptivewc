@@ -1356,7 +1356,7 @@ async def main() -> None:
         await monitor.start()
 
         if args.train_classifier:
-          if not args.url: # If no URLs are provided, fetch from Redis
+          if not args.url and not args.csv: # If no URLs are provided, fetch from Redis
               print("No URLs provided for training. Fetching all existing page structures from Redis...")
 
               monitor._training_data = await monitor.crawler_training_data(redis_client)
