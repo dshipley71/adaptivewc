@@ -53,6 +53,7 @@ Ollama Cloud Configuration:
 
 import argparse
 import asyncio
+import csv
 import json
 import os
 import pickle
@@ -1131,6 +1132,11 @@ async def main() -> None:
         help="URL to monitor (can specify multiple)",
     )
     parser.add_argument(
+        "--csv",
+        type=str,
+        help="CSV of urls to scrape",
+    )
+    parser.add_argument(
         "--interval",
         type=int,
         default=300,
@@ -1241,11 +1247,18 @@ async def main() -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     # Default URLs for news aggregators
-    urls = args.url or [
-        "https://rantingly.com",
-        "https://www.memeorandum.com/",
-        "https://news.ycombinator.com/",
-    ]
+    urls = []
+    if args.url:
+      urls = args.url
+    elif args.csv:
+      with open(args.csv, newline='', encoding='utf-8') as csvfile:
+        reader = csv.reader(csvfile)
+        data = list(reader)
+        urls = [item for sublist in data for item in sublist]
+    elif not args.train_classifier:
+      raise Exception("Please input URLs to scrape or denote to train the classifier on data in redis")
+
+    print(f"=====> urls has {len(urls)}")
 
     config = MLMonitorConfig(
         urls=urls,
