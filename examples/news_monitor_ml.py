@@ -57,13 +57,14 @@ import csv
 import json
 import os
 import pickle
+import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Dict, Literal, Optional
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -360,37 +361,60 @@ class MLNewsMonitor:
 
         self.logger.info("ML Monitor stopped")
 
-    async def crawler_training_data(self, redis_client):
-      """
-      Fetch crawler structure records from Redis and return training-ready pairs:
-      [stored_structure, page_type]
-      """
-      structure_store = StructureStore(redis_client)
-      cursor, keys = 0, []
+    async def crawler_training_data(
+      self, 
+      redis_client, 
+      manual_page_types: Optional[Dict[str, str]] = None
+      ):
+        """
+        Fetch crawler structure records and return training-ready pairs: [stored_structure, page_type].
 
-      # Scan all matching keys
-      while True:
-          cursor, batch = await redis_client.scan(cursor=cursor, match="crawler:structure:*")
-          keys.extend(batch)
-          if cursor == 0:
-              break
+        Args:
+            redis_client: Redis client instance.
+            manual_page_types: Optional dictionary mapping domain/page keys to page_type.
+                              If provided, Redis will be bypassed for these entries.
 
-      if not keys:
-          return []
+        Returns:
+            List of [stored_structure, page_type] pairs for training.
+        """
+        structure_store = StructureStore(redis_client)
+        for_training = []
 
-      # Fetch values and prepare training data
-      values = await redis_client.mget(keys)
-      for_training = []
+        if manual_page_types:
+            # Use manually provided page types
+            for key, page_type in manual_page_types.items():
+              result = re.match(r"(?:https?://)?([^/]+)(/[^/]+)?", key)
+              key = (result.group(1) + (result.group(2) or "")) if result else ""
 
-      for raw_value in values:
-          if raw_value:
-              value = json.loads(raw_value)
-              stored_structure = await structure_store.get_structure(
-                  value["domain"], value["page_type"], "default"
-              )
-              for_training.append([stored_structure, value["page_type"]])
+              #### This is where I left off --> I can't seem to pull the structure with a URL...
+              stored_structure = await structure_store.get_structure(key, page_type, "default")
+              if stored_structure:
+                print(f"=====> {key} had a structure")
+              for_training.append([stored_structure, page_type])
+                
+        else:
+            # Fallback: fetch keys from Redis
+            cursor, keys = 0, []
+            while True:
+                cursor, batch = await redis_client.scan(cursor=cursor, match="crawler:structure:*")
+                keys.extend(batch)
+                if cursor == 0:
+                    break
 
-      return for_training
+            if not keys:
+                return []
+
+            # Fetch values and prepare training data
+            values = await redis_client.mget(keys)
+            for raw_value in values:
+                if raw_value:
+                    value = json.loads(raw_value)
+                    stored_structure = await structure_store.get_structure(
+                        value["domain"], value["page_type"], "default"
+                    )
+                    for_training.append([stored_structure, value["page_type"]])
+
+        return for_training
 
     async def _load_embeddings(self) -> None:
         """Load structure embeddings from Redis."""
@@ -559,7 +583,12 @@ class MLNewsMonitor:
           f.write(html_content)
       self.logger.info("Saving HTML to file, changes detected")
 
-    async def check_url(self, url: str, save_html: bool) -> MLContentChange | None:
+    async def check_url(
+      self, 
+      url: str, 
+      save_html: bool,
+      page_type: str = None
+    ) -> MLContentChange | None:
         """
         Check a URL for changes using ML-based detection.
 
@@ -592,7 +621,10 @@ class MLNewsMonitor:
             return None
 
         domain = self._extract_domain(url)
-        page_type_rules = self._classify_page_type_rules(url)
+        if not page_type:
+          page_type_rules = self._classify_page_type_rules(url)
+        else:
+          page_type_rules = page_type
         current_structure = self.structure_analyzer.analyze(html, url, page_type_rules)
 
         # Verbose: Structure analysis
@@ -914,12 +946,15 @@ class MLNewsMonitor:
 
         return change
 
-    async def check_all_urls(self, save_html: bool) -> list[MLContentChange]:
+    async def check_all_urls(
+      self, 
+      save_html: bool
+      ) -> list[MLContentChange]:
         """Check all configured URLs for changes."""
         changes = []
 
         for url in self.config.urls:
-            change = await self.check_url(url, save_html)
+            change = await self.check_url(url, save_html, page_type)
             if change:
                 changes.append(change)
 
@@ -1224,6 +1259,12 @@ async def main() -> None:
         help="Train classifier on collected data and exit",
     )
     parser.add_argument(
+        "--training-data",
+        type=str,
+        default=None,
+        help="JSON of URLs: page type labels for training",
+    )
+    parser.add_argument(
         "--export-data",
         action="store_true",
         help="Export training data to JSONL and exit",
@@ -1356,7 +1397,15 @@ async def main() -> None:
         await monitor.start()
 
         if args.train_classifier:
-          if not args.url and not args.csv: # If no URLs are provided, fetch from Redis
+          if args.training_data:
+            print(f"=============> training data is: {args.training_data}")
+            with open(args.training_data, "r") as f:
+              training_data = json.load(f)
+            monitor._training_data = await monitor.crawler_training_data(redis_client, training_data)
+            print(f"=====> Finished colletion training data; it is a {type(monitor._training_data)} of {type(monitor._training_data)[0]} ----> {monitor._training_data[0]}")
+            
+            raise
+          elif not args.url and not args.csv: # If no URLs are provided, fetch from Redis
               print("No URLs provided for training. Fetching all existing page structures from Redis...")
 
               monitor._training_data = await monitor.crawler_training_data(redis_client)
