@@ -381,17 +381,30 @@ class MLNewsMonitor:
         for_training = []
 
         if manual_page_types:
-            # Use manually provided page types
-            for key, page_type in manual_page_types.items():
-              result = re.match(r"(?:https?://)?([^/]+)(/[^/]+)?", key)
-              key = (result.group(1) + (result.group(2) or "")) if result else ""
+          # Use manually provided page types
+          for url, page_type in manual_page_types.items():
+            result = re.match(r"(?:https?://)?([^/]+)(/[^/]+)?", url)
+            key = (result.group(1) + (result.group(2) or "")) if result else ""
 
-              #### This is where I left off --> I can't seem to pull the structure with a URL...
-              stored_structure = await structure_store.get_structure(key, page_type, "default")
-              if stored_structure:
-                print(f"=====> {key} had a structure")
+            #### This is where I left off --> I can't seem to pull the structure with a URL...
+            stored_structure = await structure_store.get_structure(key, page_type, "default")
+            if not stored_structure:
+              # Grab the structure
+              result = await self.fetch_page(url)
+              if not result:
+                self.logger.error("Failed to fetch page", url=key)
+                return None
+
+              html, status_code = result
+
+              if status_code != 200:
+                  self.logger.warning("Non-200 status", url=key, status=status_code)
+                  continue
+
+              domain = self._extract_domain(key)
+              
+              stored_structure = self.structure_analyzer.analyze(html, key, page_type)
               for_training.append([stored_structure, page_type])
-                
         else:
             # Fallback: fetch keys from Redis
             cursor, keys = 0, []
@@ -478,12 +491,12 @@ class MLNewsMonitor:
             self.logger.warning("Failed to save change detector", error=str(e))
 
         if self.classifier is not None:
-            classifier_path = model_dir / "classifier.pkl"
-            try:
-                self.classifier.save(str(classifier_path))
-                self.logger.info("Saved page type classifier")
-            except Exception as e:
-                self.logger.warning("Failed to save classifier", error=str(e))
+          classifier_path = model_dir / "classifier.pkl"
+          try:
+              self.classifier.save(str(classifier_path))
+              self.logger.info("Saved page type classifier")
+          except Exception as e:
+              self.logger.warning("Failed to save classifier", error=str(e))
 
     def _extract_domain(self, url: str) -> str:
         """Extract domain from URL."""
@@ -948,7 +961,8 @@ class MLNewsMonitor:
 
     async def check_all_urls(
       self, 
-      save_html: bool
+      save_html: bool,
+      page_type: str | None
       ) -> list[MLContentChange]:
         """Check all configured URLs for changes."""
         changes = []
@@ -1398,20 +1412,16 @@ async def main() -> None:
 
         if args.train_classifier:
           if args.training_data:
-            print(f"=============> training data is: {args.training_data}")
             with open(args.training_data, "r") as f:
               training_data = json.load(f)
             monitor._training_data = await monitor.crawler_training_data(redis_client, training_data)
-            print(f"=====> Finished colletion training data; it is a {type(monitor._training_data)} of {type(monitor._training_data)[0]} ----> {monitor._training_data[0]}")
-            
-            raise
           elif not args.url and not args.csv: # If no URLs are provided, fetch from Redis
               print("No URLs provided for training. Fetching all existing page structures from Redis...")
 
               monitor._training_data = await monitor.crawler_training_data(redis_client)
           else:
             print("\nTraining classifier on collected data...")
-            await monitor.check_all_urls(args.save_html)
+            await monitor.check_all_urls(args.save_html, None)
           
           metrics = monitor.train_classifier()
           if metrics:
@@ -1432,7 +1442,7 @@ async def main() -> None:
 
         if args.once:
             print("\nRunning single ML check...")
-            changes = await monitor.check_all_urls(args.save_html)
+            changes = await monitor.check_all_urls(args.save_html, None)
             print(f"\nDetected {len(changes)} ML change(s)")
         else:
             print("\nStarting continuous ML monitoring (Ctrl+C to stop)...")
