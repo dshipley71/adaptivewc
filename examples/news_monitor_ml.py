@@ -498,10 +498,12 @@ class MLNewsMonitor:
           except Exception as e:
               self.logger.warning("Failed to save classifier", error=str(e))
 
-    def _extract_domain(self, url: str) -> str:
+    def _extract_domain(self, url_or_key: str) -> str:
         """Extract domain from URL."""
         from urllib.parse import urlparse
-        parsed = urlparse(url)
+        if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", url_or_key):
+          url_or_key = "http://" + url_or_key
+        parsed = urlparse(url_or_key)
         return parsed.netloc
 
     def _classify_page_type_rules(self, url: str) -> str:
