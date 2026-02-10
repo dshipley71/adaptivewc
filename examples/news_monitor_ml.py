@@ -420,12 +420,17 @@ class MLNewsMonitor:
             # Fetch values and prepare training data
             values = await redis_client.mget(keys)
             for raw_value in values:
-                if raw_value:
-                    value = json.loads(raw_value)
-                    stored_structure = await self.structure_store.get_structure(
-                        value["domain"], value["page_type"], "default"
-                    )
-                    for_training.append([stored_structure, value["page_type"]])
+                if not raw_value:
+                  continue
+
+                if isinstance(raw_value, bytes):
+                  raw_value = raw_value.decode("utf-8")
+                  
+                value = json.loads(raw_value)
+                stored_structure = await self.structure_store.get_structure(
+                    value["domain"], value["page_type"], "default"
+                )
+                for_training.append([stored_structure, value["page_type"]])
 
         return for_training
 
