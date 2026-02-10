@@ -404,6 +404,15 @@ class MLNewsMonitor:
               domain = self._extract_domain(key)
               
               stored_structure = self.structure_analyzer.analyze(html, key, page_type)
+
+              # Infer extraction strategy to store to Redis
+              learned = self.strategy_learner.infer(html, stored_structure)
+              strategy = learned.strategy
+
+              await self.structure_store.save_structure(
+                stored_structure, strategy, "default"
+              )
+
               for_training.append([stored_structure, page_type])
         else:
             # Fallback: fetch keys from Redis
@@ -425,7 +434,7 @@ class MLNewsMonitor:
 
                 if isinstance(raw_value, bytes):
                   raw_value = raw_value.decode("utf-8")
-                  
+
                 value = json.loads(raw_value)
                 stored_structure = await self.structure_store.get_structure(
                     value["domain"], value["page_type"], "default"
