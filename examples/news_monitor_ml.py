@@ -391,7 +391,7 @@ class MLNewsMonitor:
               result = await self.fetch_page(url)
               if not result:
                 self.logger.error("Failed to fetch page", url=key)
-                return None
+                continue
 
               html, status_code = result
 
