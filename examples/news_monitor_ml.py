@@ -973,7 +973,7 @@ class MLNewsMonitor:
 
         while self._running:
             try:
-                changes = await self.check_all_urls()
+                changes = await self.check_all_urls(None)
 
                 if changes:
                     self.logger.info(
