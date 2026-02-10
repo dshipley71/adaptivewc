@@ -386,7 +386,9 @@ class MLNewsMonitor:
             key = (result.group(1) + (result.group(2) or "")) if result else ""
 
             stored_structure = await self.structure_store.get_structure(key, page_type, "default")
-            if not stored_structure:
+            if stored_structure:
+              for_training.append([stored_structure, page_type])
+            else:
               # Grab the structure
               result = await self.fetch_page(url)
               if not result:
