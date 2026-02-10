@@ -1093,7 +1093,7 @@ class MLNewsMonitor:
         """Run a single check cycle (useful for testing)."""
         await self.start()
         try:
-            return await self.check_all_urls()
+            return await self.check_all_urls(None)
         finally:
             await self.stop()
 
