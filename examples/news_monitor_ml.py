@@ -516,7 +516,7 @@ class MLNewsMonitor:
         elif any(p in url_lower for p in ["/tech", "/technology", "/science"]):
             return "technology"
         elif any(p in url_lower for p in ["/sport", "/esport", "/football", "/soccer", "/basketball", "/baseball", "/hockey", "/tennis", "/golf", "/athletics", "/cricket", "/fifa", "/olympics", ]):
-            return "technology"
+            return "sports"
         elif any(p in url_lower for p in ["/world", "/international", "/global"]):
             return "world"
         elif any(p in url_lower for p in ["/entertainment", "/celebrity", "/culture"]):
