@@ -377,7 +377,6 @@ class MLNewsMonitor:
         Returns:
             List of [stored_structure, page_type] pairs for training.
         """
-        structure_store = StructureStore(redis_client)
         for_training = []
 
         if manual_page_types:
@@ -386,8 +385,7 @@ class MLNewsMonitor:
             result = re.match(r"(?:https?://)?([^/]+)(/[^/]+)?", url)
             key = (result.group(1) + (result.group(2) or "")) if result else ""
 
-            #### This is where I left off --> I can't seem to pull the structure with a URL...
-            stored_structure = await structure_store.get_structure(key, page_type, "default")
+            stored_structure = await self.structure_store.get_structure(key, page_type, "default")
             if not stored_structure:
               # Grab the structure
               result = await self.fetch_page(url)
@@ -422,7 +420,7 @@ class MLNewsMonitor:
             for raw_value in values:
                 if raw_value:
                     value = json.loads(raw_value)
-                    stored_structure = await structure_store.get_structure(
+                    stored_structure = await self.structure_store.get_structure(
                         value["domain"], value["page_type"], "default"
                     )
                     for_training.append([stored_structure, value["page_type"]])
