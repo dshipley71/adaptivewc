@@ -382,28 +382,26 @@ class MLNewsMonitor:
         if manual_page_types:
           # Use manually provided page types
           for url, page_type in manual_page_types.items():
-            result = re.match(r"(?:https?://)?([^/]+)(/[^/]+)?", url)
-            key = (result.group(1) + (result.group(2) or "")) if result else ""
 
-            stored_structure = await self.structure_store.get_structure(key, page_type, "default")
+            domain = self._extract_domain(url)
+
+            stored_structure = await self.structure_store.get_structure(domain, page_type, "default")
             if stored_structure:
               for_training.append([stored_structure, page_type])
             else:
               # Grab the structure
               result = await self.fetch_page(url)
               if not result:
-                self.logger.error("Failed to fetch page", url=key)
+                self.logger.error("Failed to fetch page", url=url)
                 continue
 
               html, status_code = result
 
               if status_code != 200:
-                  self.logger.warning("Non-200 status", url=key, status=status_code)
+                  self.logger.warning("Non-200 status", url=url, status=status_code)
                   continue
-
-              domain = self._extract_domain(key)
               
-              stored_structure = self.structure_analyzer.analyze(html, key, page_type)
+              stored_structure = self.structure_analyzer.analyze(html, url, page_type)
 
               # Infer extraction strategy to store to Redis
               learned = self.strategy_learner.infer(html, stored_structure)
