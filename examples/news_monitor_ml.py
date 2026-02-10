@@ -1386,7 +1386,7 @@ async def main() -> None:
 
         if args.export_data:
             print("\nCollecting and exporting training data...")
-            await monitor.check_all_urls(l)
+            await monitor.check_all_urls(None)
             path = monitor.export_training_data()
             print(f"\nExported training data to: {path}")
             return
