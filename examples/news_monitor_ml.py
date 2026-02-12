@@ -478,9 +478,8 @@ class MLNewsMonitor:
             except Exception as e:
                 self.logger.warning("Failed to load change detector", error=str(e))
 
-        classifier_path = model_dir / "classifier.pkl"
+        classifier_path = model_dir / "classifier.json"
         if classifier_path.exists():
-          print(f"=================> classifier path existed: {classifier_path}")
           try:
               self.classifier = StructureClassifier(
                   embedding_model=self.embedding_model,
@@ -490,8 +489,7 @@ class MLNewsMonitor:
               self.logger.info("Loaded page type classifier")
           except Exception as e:
               self.logger.warning("Failed to load classifier", error=str(e))
-        else:
-          print(f"=========> classifier path did not exist")
+
 
     async def _save_ml_models(self) -> None:
         """Save trained ML models to disk."""
@@ -523,7 +521,6 @@ class MLNewsMonitor:
 
     def _classify_page_type_rules(self, url: str) -> str:
         """Classify page type based on URL patterns (fallback)."""
-        print("===============> Rules based classifier triggered")
         url_lower = url.lower()
 
         # News aggregator patterns
