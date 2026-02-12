@@ -95,25 +95,21 @@ class ContentExtractor:
         metadata_confidences = {}
         if strategy.metadata:
             for key, rule in strategy.metadata.items():
-                value, confidence = self._extract_with_rule(soup, rule)
-                if value:
-                    metadata[key] = value
-                    metadata_confidences[key] = confidence
-                else:
-                    warnings.append(f"Metadata '{key}' extraction failed")
+              value, confidence = self._extract_with_rule(soup, rule)
+              if value:
+                  metadata[key] = value
+                  metadata_confidences[key] = confidence
+              else:
+                  warnings.append(f"Metadata '{key}' extraction failed")
 
         # Extract date
         if "date" not in metadata:
-          print(f"============> date was NOT in metadata")
-          detected_date, date_confidence = self._extract_date(soup, url)
+          detected_date, date_confidence = self._extract_date(soup)
           if detected_date:
             metadata["date"] = detected_date
             metadata_confidences["date"] = date_confidence
           else:
-            print(f"================> Date extraction failed")
             warnings.append("Date extraction failed")
-        else:
-          print(f"=======> date was in metadata!")
 
         # Extract images
         images = []
@@ -201,19 +197,23 @@ class ContentExtractor:
         """
         # Try primary selector
         try:
-            elements = soup.select(rule.primary)
-            if elements:
-                # Extract from all matching elements and join
-                texts = []
-                for elem in elements:
-                    text = self._extract_text_from_element(
-                        elem, rule.extraction_method, rule.attribute_name
-                    )
-                    if text:
-                        texts.append(text)
-                if texts:
-                    combined = "\n\n".join(texts)
-                    return combined, rule.confidence
+
+          elements = soup.select(rule.primary)
+            
+          if elements:
+              # Extract from all matching elements and join
+              texts = []
+              for elem in elements:
+                text = self._extract_text_from_element(
+                    elem, rule.extraction_method, rule.attribute_name
+                )
+                if "time" in rule.primary:
+                  text = self._parse_date(text)
+                if text:
+                  texts.append(text)
+              if texts:
+                combined = "\n\n".join(texts)
+                return combined, rule.confidence
         except Exception as e:
             self.logger.warning(
                 "Primary selector failed",
@@ -249,120 +249,73 @@ class ContentExtractor:
         return None, 0.0
 
 
-    def _extract_date(self, soup: BeautifulSoup, url: str) -> tuple[str | None, float]:
-      """
-      Attempt to extract a publication date using:
-      - Structured tags (<time>, meta)
-      - JSON-LD
-      - URL patterns
-      - Image filenames
-      - Link URLs
-      - Full text fallback
-      """
+    def _extract_date(self, soup: BeautifulSoup) -> tuple[str | None, float]:
+        """
+        Attempt to extract a publication date from the page using
+        structured tags and intelligent fallback scanning.
+        """
+        print(f"===========> EXTRACT DATE TRIGGERED")
 
-      # --------------------------
-      # 1️⃣ <time> elements
-      # --------------------------
-      for time_tag in soup.find_all("time"):
+        # 1️⃣ Check <time> elements first (highest confidence)
+        for time_tag in soup.find_all("time"):
+          print(f"===============> found time_tag: {time_tag}")
+          # Try datetime attribute first
           datetime_attr = time_tag.get("datetime")
+          print(f"===============> found time_tag in time attribute: {time_tag}")
           if datetime_attr:
               parsed = self._parse_date(datetime_attr)
               if parsed:
-                  return parsed, 0.95
+                print(f"===============> extracted at <time>: {parsed}")
+                return parsed, 0.95
 
+          # Fallback to visible text
           text = time_tag.get_text(strip=True)
           parsed = self._parse_date(text)
+          print(f"===============> found time_tag: {time_tag} in text")
           if parsed:
               return parsed, 0.9
 
-      # --------------------------
-      # 2️⃣ Meta tags
-      # --------------------------
-      meta_properties = [
-          "article:published_time",
-          "article:modified_time",
-          "og:published_time",
-          "pubdate",
-          "publish-date",
-          "date",
-      ]
+        # 2️⃣ Check common meta tags
+        meta_properties = [
+            "article:published_time",
+            "article:modified_time",
+            "og:published_time",
+            "pubdate",
+            "publish-date",
+            "date",
+        ]
 
-      for prop in meta_properties:
+        for prop in meta_properties:
+          print(f"===============> found in meta prop: {prop}")
           tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
           if tag and tag.get("content"):
               parsed = self._parse_date(tag["content"])
               if parsed:
                   return parsed, 0.9
 
-      # --------------------------
-      # 3️⃣ JSON-LD structured data
-      # --------------------------
-      for script in soup.find_all("script", type="application/ld+json"):
-          try:
-              import json
-              data = json.loads(script.string or "")
-              if isinstance(data, dict):
-                  for key in ["datePublished", "dateModified", "uploadDate"]:
-                      if key in data:
-                          parsed = self._parse_date(str(data[key]))
-                          if parsed:
-                              return parsed, 0.95
-          except Exception:
-              pass
+        # 3️⃣ Look for elements with date-like class/id names
+        date_pattern = re.compile(r"(date|time|publish|posted)", re.IGNORECASE)
+        for element in soup.find_all(attrs={"class": date_pattern}) + soup.find_all(attrs={"id": date_pattern}):
+            text = element.get_text(strip=True)
+            parsed = self._parse_date(text)
+            if parsed:
+                return parsed, 0.75
 
-      # --------------------------
-      # 4️⃣ URL pattern detection
-      # --------------------------
-      parsed = self._parse_date(url)
-      if parsed:
-          return parsed, 0.7
+        # 4️⃣ Fallback: Scan full page text for date-like patterns
+        full_text = soup.get_text(separator=" ", strip=True)
 
-      # --------------------------
-      # 5️⃣ Image filename detection
-      # --------------------------
-      for img in soup.find_all("img"):
-          src = img.get("src") or img.get("data-src")
-          if src:
-              parsed = self._parse_date(src)
-              if parsed:
-                  return parsed, 0.65
+        # Broad regex for date candidates
+        date_candidates = re.findall(
+            r"\b(?:\d{1,4}[-/]\d{1,2}[-/]\d{1,4}|\d{1,2}\s+\w+\s+\d{2,4}|\w+\s+\d{1,2},?\s+\d{2,4})\b",
+            full_text,
+        )
 
-      # --------------------------
-      # 6️⃣ Link URL detection
-      # --------------------------
-      for link in soup.find_all("a", href=True):
-          parsed = self._parse_date(link["href"])
-          if parsed:
-              return parsed, 0.6
+        for candidate in date_candidates[:10]:  # limit attempts
+            parsed = self._parse_date(candidate)
+            if parsed:
+                return parsed, 0.6
 
-      # --------------------------
-      # 7️⃣ Class/id heuristics
-      # --------------------------
-      import re
-      date_pattern = re.compile(r"(date|time|publish|posted)", re.IGNORECASE)
-      for element in soup.find_all(attrs={"class": date_pattern}) + soup.find_all(attrs={"id": date_pattern}):
-          text = element.get_text(strip=True)
-          parsed = self._parse_date(text)
-          if parsed:
-              return parsed, 0.75
-
-      # --------------------------
-      # 8️⃣ Full page fallback scan
-      # --------------------------
-      full_text = soup.get_text(separator=" ", strip=True)
-
-      date_candidates = re.findall(
-          r"\b(?:\d{1,4}[-/]\d{1,2}[-/]\d{1,4}|\d{1,2}\s+\w+\s+\d{2,4}|\w+\s+\d{1,2},?\s+\d{2,4})\b",
-          full_text,
-      )
-
-      for candidate in date_candidates[:10]:
-          parsed = self._parse_date(candidate)
-          if parsed:
-              return parsed, 0.55
-
-      return None, 0.0
-
+        return None, 0.0
 
 
     def _parse_date(self, value: str) -> str | None:
@@ -376,23 +329,10 @@ class ContentExtractor:
 
         try:
             # Try dateutil first (fast for standard formats)
-            dt = dateutil_parser.parse(value, fuzzy=True)
+            dt = dateutil_parser.parse(value, fuzzy=False)
             return dt.isoformat()
         except Exception:
-            pass
-
-        try:
-            # Fallback to dateparser (handles non-Gregorian + multilingual)
-            dt = dateparser.parse(value)
-            if dt:
-                return dt.isoformat()
-        except Exception:
-            pass
-
-        return None
-
-
-
+          return None
 
     def _extract_text_from_element(
         self,
