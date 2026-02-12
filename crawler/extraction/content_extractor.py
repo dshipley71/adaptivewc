@@ -5,8 +5,13 @@ Uses BeautifulSoup to apply CSS selector rules from ExtractionStrategy to HTML,
 with fallback handling, confidence scoring, and validation.
 """
 
+from datetime import datetime
+from dateutil import parser as dateutil_parser
+import dateparser
 import time
 from typing import Any
+import re
+
 
 from bs4 import BeautifulSoup, Tag
 
@@ -96,6 +101,19 @@ class ContentExtractor:
                     metadata_confidences[key] = confidence
                 else:
                     warnings.append(f"Metadata '{key}' extraction failed")
+
+        # Extract date
+        if "date" not in metadata:
+          print(f"============> date was NOT in metadata")
+          detected_date, date_confidence = self._extract_date(soup)
+          if detected_date:
+            metadata["date"] = detected_date
+            metadata_confidences["date"] = date_confidence
+          else:
+            print(f"================> Date extraction failed")
+            warnings.append("Date extraction failed")
+        else:
+          print(f"=======> date was in metadata!")
 
         # Extract images
         images = []
@@ -229,6 +247,99 @@ class ContentExtractor:
                 )
 
         return None, 0.0
+
+
+    def _extract_date(self, soup: BeautifulSoup) -> tuple[str | None, float]:
+        """
+        Attempt to extract a publication date from the page using
+        structured tags and intelligent fallback scanning.
+        """
+
+        # 1️⃣ Check <time> elements first (highest confidence)
+        for time_tag in soup.find_all("time"):
+            # Try datetime attribute first
+            datetime_attr = time_tag.get("datetime")
+            if datetime_attr:
+                parsed = self._parse_date(datetime_attr)
+                if parsed:
+                    return parsed, 0.95
+
+            # Fallback to visible text
+            text = time_tag.get_text(strip=True)
+            parsed = self._parse_date(text)
+            if parsed:
+                return parsed, 0.9
+
+        # 2️⃣ Check common meta tags
+        meta_properties = [
+            "article:published_time",
+            "article:modified_time",
+            "og:published_time",
+            "pubdate",
+            "publish-date",
+            "date",
+        ]
+
+        for prop in meta_properties:
+            tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
+            if tag and tag.get("content"):
+                parsed = self._parse_date(tag["content"])
+                if parsed:
+                    return parsed, 0.9
+
+        # 3️⃣ Look for elements with date-like class/id names
+        date_pattern = re.compile(r"(date|time|publish|posted)", re.IGNORECASE)
+        for element in soup.find_all(attrs={"class": date_pattern}) + soup.find_all(attrs={"id": date_pattern}):
+            text = element.get_text(strip=True)
+            parsed = self._parse_date(text)
+            if parsed:
+                return parsed, 0.75
+
+        # 4️⃣ Fallback: Scan full page text for date-like patterns
+        full_text = soup.get_text(separator=" ", strip=True)
+
+        # Broad regex for date candidates
+        date_candidates = re.findall(
+            r"\b(?:\d{1,4}[-/]\d{1,2}[-/]\d{1,4}|\d{1,2}\s+\w+\s+\d{2,4}|\w+\s+\d{1,2},?\s+\d{2,4})\b",
+            full_text,
+        )
+
+        for candidate in date_candidates[:10]:  # limit attempts
+            parsed = self._parse_date(candidate)
+            if parsed:
+                return parsed, 0.6
+
+        return None, 0.0
+
+
+    def _parse_date(self, value: str) -> str | None:
+        """
+        Parse a date string into ISO-8601 format.
+        Supports multiple calendars and languages.
+        """
+
+        if not value or len(value) < 4:
+            return None
+
+        try:
+            # Try dateutil first (fast for standard formats)
+            dt = dateutil_parser.parse(value, fuzzy=True)
+            return dt.isoformat()
+        except Exception:
+            pass
+
+        try:
+            # Fallback to dateparser (handles non-Gregorian + multilingual)
+            dt = dateparser.parse(value)
+            if dt:
+                return dt.isoformat()
+        except Exception:
+            pass
+
+        return None
+
+
+
 
     def _extract_text_from_element(
         self,
