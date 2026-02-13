@@ -105,7 +105,6 @@ class ContentExtractor:
 
         # Extract date
         if "date" not in metadata:
-          print(f"=================> date was not in metadata")
           detected_date, date_confidence = self._extract_date(soup)
           if detected_date:
             metadata["date"] = detected_date
@@ -209,19 +208,17 @@ class ContentExtractor:
                 text = self._extract_text_from_element(
                     elem, rule.extraction_method, rule.attribute_name
                 )
-                if "time" in rule.primary:
-                  print(f"=======> time was the rule: {text}")
+                if "time" in rule.primary or "date" in rule.primary:
                   text = self._parse_date(text)
                 if text:
                   texts.append(text)
               if texts:
-                if "time" in rule.primary:
+                if "time" in rule.primary or "date" in rule.primary:
                   # Find the earliest date of the ones that have already happened. Eliminate the future dates.
                   earliest = [min(
                     (x for x in texts),
                     default=None
                     )]
-                  print(f"==================> Several dates were found. The earliest was {earliest} out of {texts}")
                   texts = earliest
                 combined = "\n\n".join(set(texts))
                 return combined, rule.confidence
@@ -265,9 +262,8 @@ class ContentExtractor:
         Attempt to extract a publication date from the page using
         structured tags and intelligent fallback scanning.
         """
-        print(f"===========> EXTRACT DATE TRIGGERED")
 
-        # 2️⃣ Check common meta tags
+        # 1️⃣ Check common meta tags
         meta_properties = [
             "article:published_time",
             "article:modified_time",
@@ -278,7 +274,6 @@ class ContentExtractor:
         ]
 
         for prop in meta_properties:
-          print(f"===============> found in meta prop: {prop}")
           tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
           if tag and tag.get("content"):
               parsed = self._parse_date(tag["content"])
@@ -286,22 +281,18 @@ class ContentExtractor:
                   return parsed, 0.9
 
 
-        # 1️⃣ Check <time> elements first (highest confidence)
+        # 2️⃣ Check <time> elements first (highest confidence)
         for time_tag in soup.find_all("time"):
-          print(f"===============> found time_tag: {time_tag}")
           # Try datetime attribute first
           datetime_attr = time_tag.get("datetime")
-          print(f"===============> found time_tag in time attribute: {time_tag}")
           if datetime_attr:
               parsed = self._parse_date(datetime_attr)
               if parsed:
-                print(f"===============> extracted at <time>: {parsed}")
                 return parsed, 0.95
 
           # Fallback to visible text
           text = time_tag.get_text(strip=True)
           parsed = self._parse_date(text)
-          print(f"===============> found time_tag: {time_tag} in text")
           if parsed:
               return parsed, 0.9
 
@@ -316,7 +307,6 @@ class ContentExtractor:
         ]
 
         for prop in meta_properties:
-          print(f"===============> found in meta prop: {prop}")
           tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
           if tag and tag.get("content"):
               parsed = self._parse_date(tag["content"])
@@ -399,24 +389,6 @@ class ContentExtractor:
 
       return None
 
-
-    # def _parse_date(self, value: str) -> str | None:
-    #     """
-    #     Parse a date string into ISO-8601 format.
-    #     Supports multiple calendars and languages.
-    #     """
-
-    #     if not value or len(value) < 4:
-    #         return None
-
-    #     try:
-    #         # Try dateutil first (fast for standard formats)
-    #         print(f"=====> value is a {type(value)}: {value}")
-    #         dt = dateutil_parser.parse(value, fuzzy=True)
-    #         print(f"=====> value is a {type(value)}: {value}")
-    #         return dt.isoformat()
-    #     except Exception:
-    #       return None
 
     def _extract_text_from_element(
         self,
