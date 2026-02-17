@@ -303,8 +303,6 @@ def confusion_matrix(data, categories_substr=None, size=(8,6)):
     ax.grid(which="minor", color="black", linestyle="-", linewidth=1)
     ax.tick_params(which="minor", bottom=False, left=False)
 
-    ax.set_xlabel("Predicted")
-    ax.set_ylabel("Actual")
     ax.set_title("Confusion Matrix")
     fig.colorbar(im)
 
