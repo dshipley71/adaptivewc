@@ -566,6 +566,22 @@ class MLNewsMonitor:
             self.logger.warning("ML classification failed", error=str(e))
             return self._classify_page_type_rules(url), 0.5
 
+    def html_captcha_check(self, response):
+      print(f"=======> HTML CAPTCHA TRIGGERED")
+      content = response.content.lower()
+      # Detect common captcha / bot protection patterns
+      captcha_indicators = [
+          b"captcha",
+          b"captcha-delivery",
+          b"geo.captcha-delivery.com",
+          b"please enable js",
+          b"cfasync",
+          b"cloudflare"
+      ]
+
+      if any(indicator in content for indicator in captcha_indicators):
+        return "captcha"
+
     async def fetch_page(self, url: str) -> tuple[str, int] | None:
         """Fetch a page with retry logic."""
         if not self.http_client:
@@ -636,6 +652,9 @@ class MLNewsMonitor:
             print(f"    HTML size: {len(html):,} bytes")
 
         if status_code != 200:
+          if self.html_captcha_check:
+            self.logger.warning("Captcha detected", url=url, status=status_code)
+          else:
             self.logger.warning("Non-200 status", url=url, status=status_code)
             return None
 
