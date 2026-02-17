@@ -229,11 +229,28 @@ def get_generic_categories(article_examples, generic_categories_json:str):
                     article_map.append({'domain': domain, 'category': generic_category, 'url': article_examples[domain][category][cat_url][0]})
     return article_map
 
+def html_captcha_check(response):
+  content = response.content.lower()
+  # Detect common captcha / bot protection patterns
+  captcha_indicators = [
+      b"captcha",
+      b"captcha-delivery",
+      b"geo.captcha-delivery.com",
+      b"please enable js",
+      b"cfasync",
+      b"cloudflare"
+  ]
+
+  if any(indicator in content for indicator in captcha_indicators):
+    return "captcha"
 
 def get_html(url, timeout=3):
   response = requests.get(url, timeout=timeout)
   if response.status_code != 200:
-    raise Exception(f"{url} had a status code of {response.status_code()}")
+    if html_captcha_check:
+      raise Exception(f"{url} hit a captcha")
+    else:
+      raise Exception(f"{url} had a status code of {response.status_code()}")
   return response.text
 
 def get_article_structure(url, page_type, monitor):
