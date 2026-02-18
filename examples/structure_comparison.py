@@ -28,7 +28,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from itertools import combinations_with_replacement
 
-from examples.news_monitor_ml import MLNewsMonitor, MLMonitorConfig, html_captcha_check
+from examples.news_monitor_ml import MLNewsMonitor, MLMonitorConfig
 from crawler.adaptive.change_detector import ChangeDetector, ChangeAnalysis
 
 
@@ -230,15 +230,15 @@ def get_generic_categories(article_examples, generic_categories_json:str):
     return article_map
 
 def get_html(url, monitor, timeout=3):
-  print(f"====> URL is a {type(url)} and monitor is a {type(monitor)}")
   response = requests.get(url, timeout=timeout)
   if response.status_code != 200:
     output = monitor.html_captcha_check
     if output:
-      print(f"====================> after html check: url: {type(url)} \t response {type(response)}")
-      raise Exception(f"{url} hit a captcha")
+      print(f"{url} hit a captcha")
+      return None
     else:
-      raise Exception(f"{url} had a status code of {response.status_code()}")
+      print(f"{url} had a status code of {response.status_code()}")
+      return None
   return response.text
 
 def get_article_structure(url, page_type, monitor):
@@ -329,7 +329,6 @@ def compare_websites(
     monitor.start()
   news_categories = extract_news_categories(urls)
   article_examples = extract_category_articles(news_categories, max_articles=1, timeout=5)
-  print(f"==========> monitor is a {type(monitor)} and the categories is a {type(generic_categories_json)}")
   articles_by_generic_category = get_generic_categories(article_examples, generic_categories_json)
   return compare_structures(articles_by_generic_category, monitor)
 

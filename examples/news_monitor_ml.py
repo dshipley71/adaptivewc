@@ -566,17 +566,16 @@ class MLNewsMonitor:
             self.logger.warning("ML classification failed", error=str(e))
             return self._classify_page_type_rules(url), 0.5
 
-    def html_captcha_check(self, response):
-      print(f"=======> HTML CAPTCHA TRIGGERED")
-      content = response.content.lower()
+    def html_captcha_check(self, html, url):
+      content = html.lower()
       # Detect common captcha / bot protection patterns
       captcha_indicators = [
-          b"captcha",
-          b"captcha-delivery",
-          b"geo.captcha-delivery.com",
-          b"please enable js",
-          b"cfasync",
-          b"cloudflare"
+          "captcha",
+          "captcha-delivery",
+          "geo.captcha-delivery.com",
+          "please enable js",
+          "cfasync",
+          "cloudflare"
       ]
 
       if any(indicator in content for indicator in captcha_indicators):
@@ -652,8 +651,9 @@ class MLNewsMonitor:
             print(f"    HTML size: {len(html):,} bytes")
 
         if status_code != 200:
-          if self.html_captcha_check:
+          if self.html_captcha_check(html, url):
             self.logger.warning("Captcha detected", url=url, status=status_code)
+            return None
           else:
             self.logger.warning("Non-200 status", url=url, status=status_code)
             return None
@@ -1299,8 +1299,6 @@ async def main() -> None:
         urls = [item for sublist in data for item in sublist]
     elif not args.train_classifier:
       raise Exception("Please input URLs to scrape or denote to train the classifier on data in redis")
-
-    print(f"=====> urls has {len(urls)}")
 
     config = MLMonitorConfig(
         urls=urls,
