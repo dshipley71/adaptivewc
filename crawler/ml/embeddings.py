@@ -989,25 +989,122 @@ class StructureClassifier:
         return None
 
     def save(self, path: str) -> None:
-        """Save the trained classifier."""
-        import pickle
-        with open(path, "wb") as f:
-            pickle.dump({
-                "classifier": self._classifier,
-                "label_encoder": self._label_encoder,
-                "model_name": self.embedding_model.model_name,
-                "classifier_type": self.classifier_type.value,
-            }, f)
+        """
+        Save the trained classifier using backend-native formats
+        (no pickle for the model itself).
+        """
+        if self._classifier is None:
+            raise ValueError("Classifier not trained. Call train() first.")
+
+        path_obj = Path(path)
+        base = path_obj.with_suffix("")
+
+        metadata = {
+            "model_name": self.embedding_model.model_name,
+            "classifier_type": self.classifier_type.value,
+            "classes": self._label_encoder.classes_.tolist()
+            if self._label_encoder is not None
+            else None,
+        }
+
+        # ---- XGBoost ----
+        if self.classifier_type == ClassifierType.XGBOOST:
+            model_path = base.with_suffix(".json")
+            self._classifier.save_model(str(model_path))
+            metadata["model_path"] = model_path.name
+
+        # ---- LightGBM ----
+        elif self.classifier_type == ClassifierType.LIGHTGBM:
+            model_path = base.with_suffix(".txt")
+            # LGBMClassifier wraps a Booster
+            self._classifier.booster_.save_model(str(model_path))
+            metadata["model_path"] = model_path.name
+
+        # ---- Logistic Regression (sklearn) ----
+        elif self.classifier_type == ClassifierType.LOGISTIC_REGRESSION:
+            # Still requires joblib, but more stable than raw pickle
+            import joblib
+            model_path = base.with_suffix(".joblib")
+            joblib.dump(self._classifier, model_path)
+            metadata["model_path"] = model_path.name
+
+        else:
+            raise ValueError(f"Unsupported classifier type: {self.classifier_type}")
+
+        # Save metadata separately (JSON, portable)
+        meta_path = base.with_suffix(".meta.json")
+        with open(meta_path, "w") as f:
+            json.dump(metadata, f, indent=2)
 
     def load(self, path: str) -> None:
-        """Load a trained classifier."""
-        import pickle
-        with open(path, "rb") as f:
-            data = pickle.load(f)
-            self._classifier = data["classifier"]
-            self._label_encoder = data["label_encoder"]
-            if "classifier_type" in data:
-                self.classifier_type = ClassifierType(data["classifier_type"])
+        """
+        Load a trained classifier saved with backend-native formats.
+        """
+        path_obj = Path(path)
+        base = path_obj.with_suffix("")
+
+        meta_path = base.with_suffix(".meta.json")
+        if not meta_path.exists():
+            raise FileNotFoundError(f"Metadata file not found: {meta_path}")
+
+        with open(meta_path, "r") as f:
+            metadata = json.load(f)
+
+        self.classifier_type = ClassifierType(metadata["classifier_type"])
+
+        # ---- Recreate label encoder ----
+        if metadata.get("classes") is not None:
+            from sklearn.preprocessing import LabelEncoder
+            self._label_encoder = LabelEncoder()
+            self._label_encoder.classes_ = np.array(metadata["classes"])
+        else:
+            self._label_encoder = None
+
+        # ---- XGBoost ----
+        if self.classifier_type == ClassifierType.XGBOOST:
+            from xgboost import XGBClassifier
+            model_path = base.with_suffix(".json")
+            self._classifier = XGBClassifier()
+            self._classifier.load_model(str(model_path))
+
+        # ---- LightGBM ----
+        elif self.classifier_type == ClassifierType.LIGHTGBM:
+            from lightgbm import LGBMClassifier, Booster
+            model_path = base.with_suffix(".txt")
+            booster = Booster(model_file=str(model_path))
+            self._classifier = LGBMClassifier()
+            self._classifier._Booster = booster
+            self._classifier._n_features = booster.num_feature()
+
+        # ---- Logistic Regression ----
+        elif self.classifier_type == ClassifierType.LOGISTIC_REGRESSION:
+            import joblib
+            model_path = base.with_suffix(".joblib")
+            self._classifier = joblib.load(model_path)
+
+        else:
+            raise ValueError(f"Unsupported classifier type: {self.classifier_type}")
+
+    # def save(self, path: str) -> None:
+    #     """Save the trained classifier."""
+    #     import pickle
+    #     with open(path, "wb") as f:
+    #         pickle.dump({
+    #             "classifier": self._classifier,
+    #             "label_encoder": self._label_encoder,
+    #             "model_name": self.embedding_model.model_name,
+    #             "classifier_type": self.classifier_type.value,
+    #         }, f)
+
+    # def load(self, path: str) -> None:
+    #     """Load a trained classifier."""
+    #     import pickle
+    #     with open(path, "rb") as f:
+    #         data = pickle.load(f)
+    #         self._classifier = data["classifier"]
+    #         self._label_encoder = data["label_encoder"]
+    #         if "classifier_type" in data:
+    #             self.classifier_type = ClassifierType(data["classifier_type"])
 
 
 class MLChangeDetector:

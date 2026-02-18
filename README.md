@@ -523,8 +523,8 @@ python --version
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/adaptive-crawler.git
-cd adaptive-crawler
+git clone https://github.com/dshipley71/adaptivewc.git
+cd adaptivewc
 
 # Create virtual environment
 python -m venv .venv

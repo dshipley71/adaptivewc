@@ -5,8 +5,14 @@ Uses BeautifulSoup to apply CSS selector rules from ExtractionStrategy to HTML,
 with fallback handling, confidence scoring, and validation.
 """
 
+from datetime import datetime, timezone
+from dateutil import parser as dateutil_parser
+
+import dateparser
 import time
 from typing import Any
+import re
+
 
 from bs4 import BeautifulSoup, Tag
 
@@ -90,12 +96,21 @@ class ContentExtractor:
         metadata_confidences = {}
         if strategy.metadata:
             for key, rule in strategy.metadata.items():
-                value, confidence = self._extract_with_rule(soup, rule)
-                if value:
-                    metadata[key] = value
-                    metadata_confidences[key] = confidence
-                else:
-                    warnings.append(f"Metadata '{key}' extraction failed")
+              value, confidence = self._extract_with_rule(soup, rule)
+              if value:
+                  metadata[key] = value
+                  metadata_confidences[key] = confidence
+              else:
+                  warnings.append(f"Metadata '{key}' extraction failed")
+
+        # Extract date
+        if "date" not in metadata:
+          detected_date, date_confidence = self._extract_date(soup)
+          if detected_date:
+            metadata["date"] = detected_date
+            metadata_confidences["date"] = date_confidence
+          else:
+            warnings.append("Date extraction failed")
 
         # Extract images
         images = []
@@ -183,19 +198,30 @@ class ContentExtractor:
         """
         # Try primary selector
         try:
-            elements = soup.select(rule.primary)
-            if elements:
-                # Extract from all matching elements and join
-                texts = []
-                for elem in elements:
-                    text = self._extract_text_from_element(
-                        elem, rule.extraction_method, rule.attribute_name
-                    )
-                    if text:
-                        texts.append(text)
-                if texts:
-                    combined = "\n\n".join(texts)
-                    return combined, rule.confidence
+
+          elements = soup.select(rule.primary)
+            
+          if elements:
+              # Extract from all matching elements and join
+              texts = []
+              for elem in elements:
+                text = self._extract_text_from_element(
+                    elem, rule.extraction_method, rule.attribute_name
+                )
+                if "time" in rule.primary or "date" in rule.primary:
+                  text = self._parse_date(text)
+                if text:
+                  texts.append(text)
+              if texts:
+                if "time" in rule.primary or "date" in rule.primary:
+                  # Find the earliest date of the ones that have already happened. Eliminate the future dates.
+                  earliest = [min(
+                    (x for x in texts),
+                    default=None
+                    )]
+                  texts = earliest
+                combined = "\n\n".join(set(texts))
+                return combined, rule.confidence
         except Exception as e:
             self.logger.warning(
                 "Primary selector failed",
@@ -230,6 +256,140 @@ class ContentExtractor:
 
         return None, 0.0
 
+
+    def _extract_date(self, soup: BeautifulSoup) -> tuple[str | None, float]:
+        """
+        Attempt to extract a publication date from the page using
+        structured tags and intelligent fallback scanning.
+        """
+
+        # 1️⃣ Check common meta tags
+        meta_properties = [
+            "article:published_time",
+            "article:modified_time",
+            "og:published_time",
+            "pubdate",
+            "publish-date",
+            "date",
+        ]
+
+        for prop in meta_properties:
+          tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
+          if tag and tag.get("content"):
+              parsed = self._parse_date(tag["content"])
+              if parsed:
+                  return parsed, 0.9
+
+
+        # 2️⃣ Check <time> elements first (highest confidence)
+        for time_tag in soup.find_all("time"):
+          # Try datetime attribute first
+          datetime_attr = time_tag.get("datetime")
+          if datetime_attr:
+              parsed = self._parse_date(datetime_attr)
+              if parsed:
+                return parsed, 0.95
+
+          # Fallback to visible text
+          text = time_tag.get_text(strip=True)
+          parsed = self._parse_date(text)
+          if parsed:
+              return parsed, 0.9
+
+        # 2️⃣ Check common meta tags
+        meta_properties = [
+            "article:published_time",
+            "article:modified_time",
+            "og:published_time",
+            "pubdate",
+            "publish-date",
+            "date",
+        ]
+
+        for prop in meta_properties:
+          tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
+          if tag and tag.get("content"):
+              parsed = self._parse_date(tag["content"])
+              if parsed:
+                  return parsed, 0.9
+
+        # 3️⃣ Look for elements with date-like class/id names
+        date_pattern = re.compile(r"(date|time|publish|posted)", re.IGNORECASE)
+        for element in soup.find_all(attrs={"class": date_pattern}) + soup.find_all(attrs={"id": date_pattern}):
+            text = element.get_text(strip=True)
+            parsed = self._parse_date(text)
+            if parsed:
+                return parsed, 0.75
+
+        # 4️⃣ Fallback: Scan full page text for date-like patterns
+        full_text = soup.get_text(separator=" ", strip=True)
+
+        # Broad regex for date candidates
+        date_candidates = re.findall(
+            r"\b(?:\d{1,4}[-/]\d{1,2}[-/]\d{1,4}|\d{1,2}\s+\w+\s+\d{2,4}|\w+\s+\d{1,2},?\s+\d{2,4})\b",
+            full_text,
+        )
+
+        for candidate in date_candidates[:10]:  # limit attempts
+            parsed = self._parse_date(candidate)
+            if parsed:
+                return parsed, 0.6
+
+        return None, 0.0
+
+    def _parse_date(self, value: str) -> str | None:
+      if not value or len(value) < 4:
+          return None
+
+      now = datetime.now(timezone.utc)
+
+      def valid(dt: datetime) -> str | None:
+          if dt.tzinfo is None:
+              dt = dt.replace(tzinfo=timezone.utc)
+          if dt.astimezone(timezone.utc) <= now:
+              return dt.isoformat()
+          return None
+
+      # 1️⃣ Try normal parsing
+      try:
+          dt = dateutil_parser.parse(value, fuzzy=True)
+          result = valid(dt)
+          if result:
+              return result
+      except Exception:
+          pass
+
+      # 2️⃣ ISO inside string
+      iso = re.search(
+          r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?',
+          value
+      )
+      if iso:
+          try:
+              dt = datetime.fromisoformat(iso.group(0).replace("Z", "+00:00"))
+              result = valid(dt)
+              if result:
+                  return result
+          except Exception:
+              pass
+
+      # 3️⃣ Unix timestamp
+      unix = re.search(r'\b\d{10,13}\b', value)
+      if unix:
+          try:
+              ts = int(unix.group(0))
+              if len(unix.group(0)) == 13:
+                  ts /= 1000
+              dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+              result = valid(dt)
+              if result:
+                  return result
+          except Exception:
+              pass
+
+      return None
+
+
     def _extract_text_from_element(
         self,
         element: Tag,
@@ -248,19 +408,19 @@ class ContentExtractor:
             Extracted string or None.
         """
         try:
-            if extraction_method == "text":
-                text = element.get_text(strip=True, separator=" ")
-                return text if text else None
-            elif extraction_method == "html":
-                html = str(element)
-                return html if html else None
-            elif extraction_method == "attribute" and attribute_name:
-                attr = element.get(attribute_name)
-                return str(attr) if attr else None
-            else:
-                # Default to text
-                text = element.get_text(strip=True, separator=" ")
-                return text if text else None
+          if extraction_method == "text":
+              text = element.get_text(strip=True, separator=" ")
+              return text if text else None
+          elif extraction_method == "html":
+              html = str(element)
+              return html if html else None
+          elif extraction_method == "attribute" and attribute_name:
+              attr = element.get(attribute_name)
+              return str(attr) if attr else None
+          else:
+              # Default to text
+              text = element.get_text(strip=True, separator=" ")
+              return text if text else None
         except Exception as e:
             self.logger.warning(
                 "Text extraction failed",

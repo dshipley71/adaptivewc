@@ -1,0 +1,32 @@
+{
+  "model_name": "all-MiniLM-L6-v2",
+  "classifier_type": "xgboost",
+  "classes": [
+    "arts",
+    "automotive",
+    "business",
+    "community",
+    "culture",
+    "education",
+    "entertainment",
+    "environment",
+    "events",
+    "finance",
+    "food",
+    "gaming",
+    "health",
+    "lifestyle",
+    "media",
+    "news",
+    "opinion",
+    "politics",
+    "science",
+    "security",
+    "shopping",
+    "sports",
+    "technology",
+    "travel",
+    "wellness"
+  ],
+  "model_path": "classifier.json"
+}

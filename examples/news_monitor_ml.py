@@ -53,16 +53,18 @@ Ollama Cloud Configuration:
 
 import argparse
 import asyncio
+import csv
 import json
 import os
 import pickle
+import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Dict, Literal, Optional
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -359,6 +361,86 @@ class MLNewsMonitor:
 
         self.logger.info("ML Monitor stopped")
 
+    async def crawler_training_data(
+      self, 
+      redis_client, 
+      manual_page_types: Optional[Dict[str, str]] = None
+      ):
+        """
+        Fetch crawler structure records and return training-ready pairs: [stored_structure, page_type].
+
+        Args:
+            redis_client: Redis client instance.
+            manual_page_types: Optional dictionary mapping domain/page keys to page_type.
+                              If provided, Redis will be bypassed for these entries.
+
+        Returns:
+            List of [stored_structure, page_type] pairs for training.
+        """
+        for_training = []
+
+        if manual_page_types:
+          # Use manually provided page types
+          for url, page_type in manual_page_types.items():
+
+            domain = self._extract_domain(url)
+
+            stored_structure = await self.structure_store.get_structure(domain, page_type, "default")
+            if stored_structure:
+              for_training.append([stored_structure, page_type])
+            else:
+              # Grab the structure
+              result = await self.fetch_page(url)
+              if not result:
+                self.logger.error("Failed to fetch page", url=url)
+                continue
+
+              html, status_code = result
+
+              if status_code != 200:
+                  self.logger.warning("Non-200 status", url=url, status=status_code)
+                  continue
+              
+              stored_structure = self.structure_analyzer.analyze(html, url, page_type)
+
+              # Infer extraction strategy to store to Redis
+              learned = self.strategy_learner.infer(html, stored_structure)
+              strategy = learned.strategy
+
+              await self.structure_store.save_structure(
+                stored_structure, strategy, "default"
+              )
+
+              for_training.append([stored_structure, page_type])
+        else:
+            # Fallback: fetch keys from Redis
+            cursor, keys = 0, []
+            while True:
+                cursor, batch = await redis_client.scan(cursor=cursor, match="crawler:structure:*")
+                keys.extend(batch)
+                if cursor == 0:
+                    break
+
+            if not keys:
+                return []
+
+            # Fetch values and prepare training data
+            values = await redis_client.mget(keys)
+            for raw_value in values:
+                if not raw_value:
+                  continue
+
+                if isinstance(raw_value, bytes):
+                  raw_value = raw_value.decode("utf-8")
+
+                value = json.loads(raw_value)
+                stored_structure = await self.structure_store.get_structure(
+                    value["domain"], value["page_type"], "default"
+                )
+                for_training.append([stored_structure, value["page_type"]])
+
+        return for_training
+
     async def _load_embeddings(self) -> None:
         """Load structure embeddings from Redis."""
         if not self.redis_client:
@@ -396,17 +478,18 @@ class MLNewsMonitor:
             except Exception as e:
                 self.logger.warning("Failed to load change detector", error=str(e))
 
-        classifier_path = model_dir / "classifier.pkl"
+        classifier_path = model_dir / "classifier.json"
         if classifier_path.exists():
-            try:
-                self.classifier = StructureClassifier(
-                    embedding_model=self.embedding_model,
-                    classifier_type=ClassifierType(self.config.classifier_type),
-                )
-                self.classifier.load(str(classifier_path))
-                self.logger.info("Loaded page type classifier")
-            except Exception as e:
-                self.logger.warning("Failed to load classifier", error=str(e))
+          try:
+              self.classifier = StructureClassifier(
+                  embedding_model=self.embedding_model,
+                  classifier_type=ClassifierType(self.config.classifier_type),
+              )
+              self.classifier.load(str(classifier_path))
+              self.logger.info("Loaded page type classifier")
+          except Exception as e:
+              self.logger.warning("Failed to load classifier", error=str(e))
+
 
     async def _save_ml_models(self) -> None:
         """Save trained ML models to disk."""
@@ -421,17 +504,19 @@ class MLNewsMonitor:
             self.logger.warning("Failed to save change detector", error=str(e))
 
         if self.classifier is not None:
-            classifier_path = model_dir / "classifier.pkl"
-            try:
-                self.classifier.save(str(classifier_path))
-                self.logger.info("Saved page type classifier")
-            except Exception as e:
-                self.logger.warning("Failed to save classifier", error=str(e))
+          classifier_path = model_dir / "classifier.pkl"
+          try:
+              self.classifier.save(str(classifier_path))
+              self.logger.info("Saved page type classifier")
+          except Exception as e:
+              self.logger.warning("Failed to save classifier", error=str(e))
 
-    def _extract_domain(self, url: str) -> str:
+    def _extract_domain(self, url_or_key: str) -> str:
         """Extract domain from URL."""
         from urllib.parse import urlparse
-        parsed = urlparse(url)
+        if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", url_or_key):
+          url_or_key = "http://" + url_or_key
+        parsed = urlparse(url_or_key)
         return parsed.netloc
 
     def _classify_page_type_rules(self, url: str) -> str:
@@ -445,6 +530,8 @@ class MLNewsMonitor:
             return "business"
         elif any(p in url_lower for p in ["/tech", "/technology", "/science"]):
             return "technology"
+        elif any(p in url_lower for p in ["/sport", "/esport", "/football", "/soccer", "/basketball", "/baseball", "/hockey", "/tennis", "/golf", "/athletics", "/cricket", "/fifa", "/olympics", ]):
+            return "sports"
         elif any(p in url_lower for p in ["/world", "/international", "/global"]):
             return "world"
         elif any(p in url_lower for p in ["/entertainment", "/celebrity", "/culture"]):
@@ -478,6 +565,21 @@ class MLNewsMonitor:
         except Exception as e:
             self.logger.warning("ML classification failed", error=str(e))
             return self._classify_page_type_rules(url), 0.5
+
+    def html_captcha_check(self, html, url):
+      content = html.lower()
+      # Detect common captcha / bot protection patterns
+      captcha_indicators = [
+          "captcha",
+          "captcha-delivery",
+          "geo.captcha-delivery.com",
+          "please enable js",
+          "cfasync",
+          "cloudflare"
+      ]
+
+      if any(indicator in content for indicator in captcha_indicators):
+        return "captcha"
 
     async def fetch_page(self, url: str) -> tuple[str, int] | None:
         """Fetch a page with retry logic."""
@@ -516,7 +618,11 @@ class MLNewsMonitor:
 
         return None
 
-    async def check_url(self, url: str) -> MLContentChange | None:
+    async def check_url(
+      self, 
+      url: str, 
+      page_type: str = None
+    ) -> MLContentChange | None:
         """
         Check a URL for changes using ML-based detection.
 
@@ -545,11 +651,18 @@ class MLNewsMonitor:
             print(f"    HTML size: {len(html):,} bytes")
 
         if status_code != 200:
+          if self.html_captcha_check(html, url):
+            self.logger.warning("Captcha detected", url=url, status=status_code)
+            return None
+          else:
             self.logger.warning("Non-200 status", url=url, status=status_code)
             return None
 
         domain = self._extract_domain(url)
-        page_type_rules = self._classify_page_type_rules(url)
+        if not page_type:
+          page_type_rules = self._classify_page_type_rules(url)
+        else:
+          page_type_rules = page_type
         current_structure = self.structure_analyzer.analyze(html, url, page_type_rules)
 
         # Verbose: Structure analysis
@@ -595,6 +708,7 @@ class MLNewsMonitor:
 
         # ML: Compute similarity using embeddings
         if previous_embedding:
+            
             similarity = self.embedding_model.compute_similarity(
                 previous_embedding, current_embedding
             )
@@ -622,6 +736,7 @@ class MLNewsMonitor:
                 return None
         else:
             similarity = 0.0
+
             if self.config.verbose:
                 print(f"    No previous embedding - this is a NEW page")
                 print(f"    Similarity set to: 0.0 (new baseline)")
@@ -864,12 +979,15 @@ class MLNewsMonitor:
 
         return change
 
-    async def check_all_urls(self) -> list[MLContentChange]:
+    async def check_all_urls(
+      self, 
+      page_type: str | None
+      ) -> list[MLContentChange]:
         """Check all configured URLs for changes."""
         changes = []
 
         for url in self.config.urls:
-            change = await self.check_url(url)
+            change = await self.check_url(url, page_type)
             if change:
                 changes.append(change)
 
@@ -891,7 +1009,7 @@ class MLNewsMonitor:
 
         while self._running:
             try:
-                changes = await self.check_all_urls()
+                changes = await self.check_all_urls(None)
 
                 if changes:
                     self.logger.info(
@@ -936,9 +1054,10 @@ class MLNewsMonitor:
 
     def train_classifier(self, min_samples_per_class: int = 5) -> dict[str, Any] | None:
         """Train the page type classifier on collected data."""
+
         if len(self._training_data) < 10:
             self.logger.warning(
-                "Insufficient training data",
+                "Insufficient training data}",
                 samples=len(self._training_data),
             )
             return None
@@ -1008,7 +1127,7 @@ class MLNewsMonitor:
         """Run a single check cycle (useful for testing)."""
         await self.start()
         try:
-            return await self.check_all_urls()
+            return await self.check_all_urls(None)
         finally:
             await self.stop()
 
@@ -1052,6 +1171,11 @@ async def main() -> None:
         type=str,
         action="append",
         help="URL to monitor (can specify multiple)",
+    )
+    parser.add_argument(
+        "--csv",
+        type=str,
+        help="CSV of urls to scrape",
     )
     parser.add_argument(
         "--interval",
@@ -1136,6 +1260,12 @@ async def main() -> None:
         help="Train classifier on collected data and exit",
     )
     parser.add_argument(
+        "--training-data",
+        type=str,
+        default=None,
+        help="JSON of URLs: page type labels for training",
+    )
+    parser.add_argument(
         "--export-data",
         action="store_true",
         help="Export training data to JSONL and exit",
@@ -1159,11 +1289,16 @@ async def main() -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     # Default URLs for news aggregators
-    urls = args.url or [
-        "https://rantingly.com",
-        "https://www.memeorandum.com/",
-        "https://news.ycombinator.com/",
-    ]
+    urls = []
+    if args.url:
+      urls = args.url
+    elif args.csv:
+      with open(args.csv, newline='', encoding='utf-8') as csvfile:
+        reader = csv.reader(csvfile)
+        data = list(reader)
+        urls = [item for sublist in data for item in sublist]
+    elif not args.train_classifier:
+      raise Exception("Please input URLs to scrape or denote to train the classifier on data in redis")
 
     config = MLMonitorConfig(
         urls=urls,
@@ -1215,7 +1350,7 @@ async def main() -> None:
     # Check Redis
     print("Checking prerequisites...")
     try:
-        redis_client = redis.from_url(config.redis_url)
+        redis_client = redis.from_url(config.redis_url, decode_responses=True)
         await redis_client.ping()
         await redis_client.aclose()
         print("  [OK] Redis is running")
@@ -1261,28 +1396,38 @@ async def main() -> None:
         await monitor.start()
 
         if args.train_classifier:
+          if args.training_data:
+            with open(args.training_data, "r") as f:
+              training_data = json.load(f)
+            monitor._training_data = await monitor.crawler_training_data(redis_client, training_data)
+          elif not args.url and not args.csv: # If no URLs are provided, fetch from Redis
+              print("No URLs provided for training. Fetching all existing page structures from Redis...")
+
+              monitor._training_data = await monitor.crawler_training_data(redis_client)
+          else:
             print("\nTraining classifier on collected data...")
-            await monitor.check_all_urls()
-            metrics = monitor.train_classifier()
-            if metrics:
-                print(f"\nTraining complete!")
-                print(f"  Accuracy: {metrics['accuracy']:.2%}")
-                print(f"  Samples: {metrics['num_samples']}")
-                print(f"  Classes: {metrics['num_classes']}")
-            else:
-                print("\nInsufficient data for training")
-            return
+            await monitor.check_all_urls(None)
+          
+          metrics = monitor.train_classifier()
+          if metrics:
+              print(f"\nTraining complete!")
+              print(f"  Accuracy: {metrics['accuracy']:.2%}")
+              print(f"  Samples: {metrics['num_samples']}")
+              print(f"  Classes: {metrics['num_classes']}")
+          else:
+              print("\nInsufficient data for training")
+          return
 
         if args.export_data:
             print("\nCollecting and exporting training data...")
-            await monitor.check_all_urls()
+            await monitor.check_all_urls(None)
             path = monitor.export_training_data()
             print(f"\nExported training data to: {path}")
             return
 
         if args.once:
             print("\nRunning single ML check...")
-            changes = await monitor.check_all_urls()
+            changes = await monitor.check_all_urls(None)
             print(f"\nDetected {len(changes)} ML change(s)")
         else:
             print("\nStarting continuous ML monitoring (Ctrl+C to stop)...")
@@ -1298,3 +1443,6 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+
