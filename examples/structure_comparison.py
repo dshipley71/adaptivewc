@@ -214,6 +214,17 @@ def extract_category_articles(category_map, max_articles=5, timeout=10):
 
     return results
 
+def restructure_articles(article_examples):
+    article_map = []
+    for domain in article_examples:
+      for category in article_examples[domain]:
+          for cat_url in article_examples[domain][category]:
+            article_map.append({
+                'domain': domain,
+                'category': category,
+                'url': article_examples[domain][category][cat_url][0]
+            })
+    return article_map
 
 def get_generic_categories(article_examples, generic_categories_json:str):
     with open(generic_categories_json, "r") as f:
@@ -229,10 +240,24 @@ def get_generic_categories(article_examples, generic_categories_json:str):
                     article_map.append({'domain': domain, 'category': generic_category, 'url': article_examples[domain][category][cat_url][0]})
     return article_map
 
+
+def restructure_articles(article_examples):
+    article_map = []
+    for domain in article_examples:
+      for category in article_examples[domain]:
+          for cat_url in article_examples[domain][category]:
+            article_map.append({
+                'domain': domain,
+                'category': category,
+                'url': article_examples[domain][category][cat_url][0]
+            })
+    return article_map
+
+
 def get_html(url, monitor, timeout=3):
   response = requests.get(url, timeout=timeout)
   if response.status_code != 200:
-    output = monitor.html_captcha_check
+    output = monitor.html_captcha_check(response.content, url)
     if output:
       print(f"{url} hit a captcha")
       return None
@@ -242,7 +267,7 @@ def get_html(url, monitor, timeout=3):
   return response.text
 
 def get_article_structure(url, page_type, monitor):
-  html = monitor.get_html(url, monitor, timeout=3)
+  html = get_html(url, monitor, timeout=3)
   structure = monitor.structure_analyzer.analyze(html, url, page_type)
   return structure
 
@@ -329,7 +354,7 @@ def compare_websites(
     monitor.start()
   news_categories = extract_news_categories(urls)
   article_examples = extract_category_articles(news_categories, max_articles=1, timeout=5)
-  articles_by_generic_category = get_generic_categories(article_examples, generic_categories_json)
-  return compare_structures(articles_by_generic_category, monitor)
+  article_examples = restructure_articles(article_examples)
+  return compare_structures(article_examples, monitor)
 
 
