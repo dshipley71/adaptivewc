@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<title>Error 403</title>
+		<link rel="stylesheet" href="https://bluestack-error-pages.s3.amazonaws.com/403/css/error.css">
+<link rel="preconnect" href="https://fonts.googleapis.com/"> 
+<link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin=""> 
+<meta name="robots" content="noindex">
+	</head>
+	<body class="land-see land-see-error--404 land-see-error">
+		<script async="" src="https://www.googletagmanager.com/gtag/js?G-DB47P62DYS"></script>
+	<script>
+		window.dataLayer = window.dataLayer || [];
+		function gtag(){dataLayer.push(arguments);}
+		gtag('js', new Date());
+		
+		gtag('config', 'G-DB47P62DYS');
+		
+		gtag('event', 'page_view');
+	</script>
+		<div class="land-see-error__content">
+			<span class="land-see-error__icono"></span>
+			<h1 class="land-see-error__title">Ups! Something went wrong </h1>
+			<p class="land-see-error__description"><strong>Lo sentimos pero tu petición ha sido bloqueada por razones de seguridad. Esto puede deberse al uso de una VPN o visitas desde países que no están permitidos.</strong></p>
+			<p class="land-see-error__description">Si consideras que esto es un error, por favor, escríbenos desde <a class="form-link" rel="nofollow" href="https://bluestack.la/sec/index.html">este formulario</a> indicando tu correo. Gracias.</p>
+            <hr>
+			<p class="land-see-error__description">  <strong>We are sorry but your request has been blocked. This may be due to using a VPN or visiting from countries that are not allowed.</strong>  </p>
+			<p class="land-see-error__description"> If you think this is an error, please send us an email from <a class="form-link" rel="nofollow" href="https://bluestack.la/sec/en.html">this form</a> with your email address. Thanks. </p>
+			<hr>
+			<p class="land-see-error__description"> <strong>Lamentamos mas o seu pedido foi bloqueado. Isso pode ser devido ao uso de VPN ou à visita de países não permitidos. </strong> </p> 
+			<p class="land-see-error__description">Se você acha que isso é um erro, envie-nos uma mensagem a partir <a class="form-link" rel="nofollow" href="https://bluestack.la/sec/pt.html">deste formulário</a> com seu e-mail.</p>
+			<span class="land-see-error__logo"></span>
+		</div>
+	<script>
+		window.addEventListener('DOMContentLoaded', function () {
+			function parseUsableHeaders(httpHeaders) {
+				return httpHeaders.split("\r\n")
+				.map(x=>x.split(/: */,2))
+				.filter(x=>x[0])
+				.reduce((ac, x)=>{ac[x[0]] = x[1];return ac;}, {});
+			}
+			var req = new XMLHttpRequest();
+			req.open('GET', document.location, false);
+			req.send(null);
+			var headers = parseUsableHeaders(req.getAllResponseHeaders().toLowerCase());
+			console.log("HEADERS .... <br>");
+			console.log(headers);
+			[...document.getElementsByClassName("form-link")].forEach((element) => {
+				element.setAttribute("href", element.getAttribute("href") + "?ref=" + window.location.href + "&type=" + (headers.server || "no-data") + "&user-agent=" + (navigator.userAgent || "no-data") + "&result-type=" + (navigator.x_edge_detailed_result_type || "no-data"));
+			})
+		})
+	</script>
+</body></html>
