@@ -254,17 +254,21 @@ def restructure_articles(article_examples):
     return article_map
 
 
-def get_html(url, monitor, timeout=3):
-  response = requests.get(url, timeout=timeout)
-  if response.status_code != 200:
-    output = monitor.html_captcha_check(response.content, url)
-    if output:
-      print(f"{url} hit a captcha")
-      return None
-    else:
-      print(f"{url} had a status code of {response.status_code()}")
-      return None
-  return response.text
+async def get_html(url, monitor):
+    result = await monitor.fetch_page(url)
+    if not result:
+        return None
+
+    html, status_code = result
+
+    if status_code != 200:
+        if html and monitor.html_captcha_check(html, url):
+            print("==========> Captcha detected")
+        else:
+            print(f"==========> Non-200 status: {status_code}")
+        return None
+
+    return html
 
 def get_article_structure(url, page_type, monitor):
   html = get_html(url, monitor, timeout=3)
@@ -353,7 +357,7 @@ def compare_websites(
     monitor = MLNewsMonitor(config)
     monitor.start()
   news_categories = extract_news_categories(urls)
-  article_examples = extract_category_articles(news_categories, max_articles=1, timeout=5)
+  article_examples = extract_category_articles(news_categories, max_articles=3, timeout=5)
   article_examples = restructure_articles(article_examples)
   return compare_structures(article_examples, monitor)
 

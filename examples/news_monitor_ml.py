@@ -567,19 +567,23 @@ class MLNewsMonitor:
             return self._classify_page_type_rules(url), 0.5
 
     def html_captcha_check(self, html, url):
-      content = html.lower()
-      # Detect common captcha / bot protection patterns
-      captcha_indicators = [
-          "captcha",
-          "captcha-delivery",
-          "geo.captcha-delivery.com",
-          "please enable js",
-          "cfasync",
-          "cloudflare"
-      ]
+      try:
+        content = html.lower()
+        # Detect common captcha / bot protection patterns
+        captcha_indicators = [
+            "captcha",
+            "captcha-delivery",
+            "geo.captcha-delivery.com",
+            "please enable js",
+            "cfasync",
+            "cloudflare"
+        ]
 
-      if any(indicator in content for indicator in captcha_indicators):
-        return "captcha"
+        if any(indicator in content for indicator in captcha_indicators):
+          return "captcha"
+      except Exception as e:
+        self.logger.warning("Issue in Captcha detection", url=url, error=str(e))
+        return None
 
     async def fetch_page(self, url: str) -> tuple[str, int] | None:
         """Fetch a page with retry logic."""
@@ -650,7 +654,7 @@ class MLNewsMonitor:
             print(f"    Status: {status_code}")
             print(f"    HTML size: {len(html):,} bytes")
 
-        if status_code != 200:
+        if status_code != 200 and html:
           if self.html_captcha_check(html, url):
             self.logger.warning("Captcha detected", url=url, status=status_code)
             return None
@@ -1152,6 +1156,8 @@ def print_ml_change(change: MLContentChange) -> None:
         content = change.extracted_content.content
         print(f"\nExtracted Content:")
         print(f"  Title: {content.title}")
+        if content.metadata and 'date' in content.metadata:
+          print(f"  Date: {content.metadata['date']}")
         if content.content:
             preview = content.content[:200].replace('\n', ' ')
             print(f"  Preview: {preview}...")
@@ -1443,6 +1449,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
