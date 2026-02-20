@@ -633,6 +633,7 @@ class MLNewsMonitor:
         Returns:
             MLContentChange if changes detected, None otherwise.
         """
+        print(f"===========> in news_monitor_ml.py, llm provider is set to {self.config.llm_provider}")
         self.logger.info("Checking URL (ML)", url=url)
 
         # Verbose: Start check
@@ -641,6 +642,7 @@ class MLNewsMonitor:
             print(f"  CHECKING URL: {url}")
             print(f"{'='*70}")
 
+        print(f"======> fetching page")
         result = await self.fetch_page(url)
         if not result:
             self.logger.error("Failed to fetch page", url=url)
@@ -921,6 +923,7 @@ class MLNewsMonitor:
         # Extract content
         if self.config.verbose:
             print(f"\n[10] CONTENT EXTRACTION")
+        print(f"===========> in news_monitor_ml.py, llm provider is set to {self.config.llm_provider}")
         extraction_result = self.content_extractor.extract(
           url, 
           html, 

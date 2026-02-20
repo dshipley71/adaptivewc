@@ -662,6 +662,7 @@ class LLMDateExtractor(BaseDateExtractor):
         self.api_key = api_key
         self.base_url = base_url
         self._client = None
+        print(f"######### ==> provider is set to {self.provider}")
 
     def _get_client(self):
         if self._client:
@@ -694,6 +695,7 @@ class LLMDateExtractor(BaseDateExtractor):
                 base_url=self.base_url or "https://api.ollama.ai/v1",
                 api_key=self.api_key or os.environ.get("OLLAMA_API_KEY"),
             )
+            print(f"########========> ollama cloud initialized")
 
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
