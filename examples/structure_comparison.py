@@ -46,16 +46,10 @@ with open("training_data/generic_categories.json", "r") as f:
 
 
 
-def extract_news_categories(domains, timeout=10):
+async def extract_news_categories(domains, monitor, timeout=10):
     """
     Extract news categories and their URLs from top-level navigation links.
-    Returns:
-    {
-        "cnn.com": {
-            "business": "https://www.cnn.com/business",
-            "politics": "https://www.cnn.com/politics"
-        }
-    }
+    Uses MLNewsMonitor.fetch_page instead of requests.
     """
     results = {}
 
@@ -63,20 +57,23 @@ def extract_news_categories(domains, timeout=10):
         base_url = f"https://{domain}"
         categories = {}
 
-        try:
-            resp = requests.get(
-                base_url,
-                timeout=timeout,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            resp.raise_for_status()
-        except Exception:
+        fetched = await monitor.fetch_page(base_url)
+        if not fetched:
             results[domain] = {}
             continue
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        html, status_code = fetched
 
-        # Focus on nav + header areas
+        if status_code != 200:
+            if html and monitor.html_captcha_check(html, base_url):
+                print("==========> Captcha detected")
+            else:
+                print(f"==========> Non-200 status: {status_code}")
+            results[domain] = {}
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+
         nav_containers = soup.find_all(["nav", "header"])
 
         for container in nav_containers:
@@ -90,13 +87,11 @@ def extract_news_categories(domains, timeout=10):
                 full_url = urljoin(base_url, href)
                 parsed = urlparse(full_url)
 
-                # Must stay on same domain
                 if domain not in parsed.netloc:
                     continue
 
                 path = parsed.path.strip("/")
 
-                # Only top-level paths
                 if not path or "/" in path:
                     continue
                 if not path.isalpha():
@@ -106,10 +101,10 @@ def extract_news_categories(domains, timeout=10):
                 if len(path) > 20:
                     continue
 
-                # Prefer the first clean URL we see
                 categories.setdefault(path, full_url)
 
         results[domain] = dict(sorted(categories.items()))
+
     return results
 
 
@@ -117,25 +112,14 @@ ARTICLE_EXCLUDES = {
     "video", "live", "gallery", "photos", "interactive", "index.html", "/rss"
 }
 
-
-def extract_category_articles(category_map, max_articles=5, timeout=10):
+async def extract_category_articles(category_map, monitor, max_articles=5, timeout=10):
     """
     Given a category map like:
     {
         "cnn.com": {"business": "https://www.cnn.com/business"}
     }
 
-    Return:
-    {
-        "cnn.com": {
-            "business": {
-                "https://www.cnn.com/business": [
-                    "https://www.cnn.com/... (articles with most '-' preferred)",
-                    ...
-                ]
-            }
-        }
-    }
+    Return structured articles, using MLNewsMonitor.fetch_page instead of requests.
     """
     results = {}
 
@@ -145,64 +129,50 @@ def extract_category_articles(category_map, max_articles=5, timeout=10):
 
         for category, category_url in categories.items():
             candidate_articles = []
-            all_articles = []
 
-            try:
-                resp = requests.get(
-                    category_url,
-                    timeout=timeout,
-                    headers={"User-Agent": "Mozilla/5.0"},
-                )
-                resp.raise_for_status()
-            except Exception as e:
-              print(f"========> Issue with getting {domain} {category} article: {e}")
-              continue
+            fetched = await monitor.fetch_page(category_url)
+            if not fetched:
+                continue
 
-            soup = BeautifulSoup(resp.text, "html.parser")
+            html, status_code = fetched
+            if status_code != 200:
+                continue
+
+            soup = BeautifulSoup(html, "html.parser")
 
             for a in soup.find_all("a", href=True):
                 href = a["href"].strip()
                 full_url = urljoin(category_url, href)
                 parsed = urlparse(full_url)
-                all_articles.append(parsed)
 
-                # Must be same domain
                 if domain not in parsed.netloc:
                     continue
 
                 path = parsed.path.strip("/")
-
-                # Heuristic: articles usually have multiple path segments
                 segments = path.split("/")
+
                 if len(segments) < 2:
                     continue
 
-                # Look for article-like patterns
                 article_like = (
-                    re.search(r"\d{4}/\d{2}/\d{2}", path) or     # date-based
-                    re.search(r"\d{5,}", path) or               # numeric ID
-                    path.count("-") >= 2                       # long slug
+                    re.search(r"\d{4}/\d{2}/\d{2}", path) or
+                    re.search(r"\d{5,}", path) or
+                    path.count("-") >= 2
                 )
 
                 if not article_like:
                     continue
 
-                # Filter pagination
                 if re.search(r"/page/\d+/?$", parsed.path):
                     continue
 
-                # Must start with category
                 if not path.startswith(category):
                     continue
 
-                # candidate_articles.append((full_url, len(path)))
                 candidate_articles.append((full_url, path.count("-")))
 
-            # Sort articles by number of '-' in descending order
             candidate_articles = list(set(candidate_articles))
             candidate_articles.sort(key=lambda x: x[1], reverse=True)
-
-            # Keep only top `max_articles`
             articles = [url for url, _ in candidate_articles[:max_articles]]
 
             if articles:
@@ -210,7 +180,6 @@ def extract_category_articles(category_map, max_articles=5, timeout=10):
 
         if domain_results:
             results[domain] = domain_results
-            # save_progress(results)
 
     return results
 
@@ -254,14 +223,11 @@ def restructure_articles(article_examples):
     return article_map
 
 
-async def get_html(url, monitor):
-    result = await monitor.fetch_page(url)
-    if not result:
-        return None
-
-    html, status_code = result
-
-    if status_code != 200:
+def get_html(url, monitor):
+    response = requests.get(url)
+    html = response.text
+    
+    if response.status_code != 200:
         if html and monitor.html_captcha_check(html, url):
             print("==========> Captcha detected")
         else:
@@ -271,7 +237,7 @@ async def get_html(url, monitor):
     return html
 
 def get_article_structure(url, page_type, monitor):
-  html = get_html(url, monitor, timeout=3)
+  html = get_html(url, monitor)
   structure = monitor.structure_analyzer.analyze(html, url, page_type)
   return structure
 
@@ -346,19 +312,20 @@ def confusion_matrix(data, categories_substr=None, size=(8,6)):
     return matrix
 
 
-
-def compare_websites(
-    urls: list, 
-    monitor: MLNewsMonitor, 
-    generic_categories_json: str ="training_data/generic_categories.json"
+async def compare_websites(
+    urls: list,
+    monitor: MLNewsMonitor | None = None,
+    generic_categories_json: str = "training_data/generic_categories.json"
 ):
-  if not monitor:
-    config = MLMonitorConfig(model_dir = "ml_models_news")
-    monitor = MLNewsMonitor(config)
-    monitor.start()
-  news_categories = extract_news_categories(urls)
-  article_examples = extract_category_articles(news_categories, max_articles=3, timeout=5)
-  article_examples = restructure_articles(article_examples)
-  return compare_structures(article_examples, monitor)
+    if not monitor:
+        config = MLMonitorConfig(model_dir="ml_models_news")
+        monitor = MLNewsMonitor(config)
+        monitor.start()
 
+    news_categories = await extract_news_categories(urls, monitor)
+    article_examples = await extract_category_articles(
+        news_categories, monitor=monitor, max_articles=3, timeout=5
+    )
+    article_examples = restructure_articles(article_examples)
 
+    return compare_structures(article_examples, monitor)
