@@ -155,7 +155,6 @@ def extract_category_articles(category_map, max_articles=5, timeout=10):
                 )
                 resp.raise_for_status()
             except Exception as e:
-              print(f"========> Issue with getting {domain} {category} article: {e}")
               continue
 
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -254,14 +253,11 @@ def restructure_articles(article_examples):
     return article_map
 
 
-async def get_html(url, monitor):
-    result = await monitor.fetch_page(url)
-    if not result:
-        return None
-
-    html, status_code = result
-
-    if status_code != 200:
+def get_html(url, monitor):
+    response = requests.get(url)
+    html = response.text
+    
+    if response.status_code != 200:
         if html and monitor.html_captcha_check(html, url):
             print("==========> Captcha detected")
         else:
@@ -271,7 +267,7 @@ async def get_html(url, monitor):
     return html
 
 def get_article_structure(url, page_type, monitor):
-  html = get_html(url, monitor, timeout=3)
+  html = get_html(url, monitor)
   structure = monitor.structure_analyzer.analyze(html, url, page_type)
   return structure
 
@@ -360,5 +356,4 @@ def compare_websites(
   article_examples = extract_category_articles(news_categories, max_articles=3, timeout=5)
   article_examples = restructure_articles(article_examples)
   return compare_structures(article_examples, monitor)
-
 
