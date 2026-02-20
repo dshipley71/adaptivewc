@@ -9,9 +9,17 @@ from datetime import datetime, timezone
 from dateutil import parser as dateutil_parser
 
 import dateparser
-import time
-from typing import Any
+import json
+import os
 import re
+import time
+from typing import Any, Literal, Optional, Dict
+import re
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
 
 
 from bs4 import BeautifulSoup, Tag
@@ -23,6 +31,7 @@ from crawler.models import (
     SelectorRule,
 )
 from crawler.utils.logging import CrawlerLogger
+
 
 
 class ContentExtractor:
@@ -47,6 +56,9 @@ class ContentExtractor:
         url: str,
         html: str,
         strategy: ExtractionStrategy,
+        llm_provider: str | None = None,
+        ollama_base_url: str | None = None,
+        llm_api_key: str | None = None 
     ) -> ExtractionResult:
         """
         Extract content from HTML using the provided strategy.
@@ -110,7 +122,17 @@ class ContentExtractor:
             metadata["date"] = detected_date
             metadata_confidences["date"] = date_confidence
           else:
-            warnings.append("Date extraction failed")
+            extractor = get_date_extractor(
+              provider=llm_provider, 
+              base_url=ollama_base_url,
+              api_key=llm_api_key
+            )
+
+            result = extractor.extract(html)
+
+            metadata["date"] =  self._parse_date(result.publish_date)
+            metadata_confidences["date"] = result.confidence
+            warnings.append(f"Date was extracted via LLM with source hint at: {result.publish_date}")
 
         # Extract images
         images = []
@@ -296,22 +318,6 @@ class ContentExtractor:
           if parsed:
               return parsed, 0.9
 
-        # 2️⃣ Check common meta tags
-        meta_properties = [
-            "article:published_time",
-            "article:modified_time",
-            "og:published_time",
-            "pubdate",
-            "publish-date",
-            "date",
-        ]
-
-        for prop in meta_properties:
-          tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
-          if tag and tag.get("content"):
-              parsed = self._parse_date(tag["content"])
-              if parsed:
-                  return parsed, 0.9
 
         # 3️⃣ Look for elements with date-like class/id names
         date_pattern = re.compile(r"(date|time|publish|posted)", re.IGNORECASE)
@@ -589,3 +595,263 @@ class ContentExtractor:
             return False
 
         return True
+
+
+@dataclass
+class PublishDateResult:
+    """Structured publish date extraction result."""
+
+    publish_date: Optional[str]
+    source_hint: Optional[str]
+    confidence: float
+    extraction_method: str  # LLM provider name
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "publish_date": self.publish_date,
+            "source_hint": self.source_hint,
+            "confidence": self.confidence,
+            "extraction_method": self.extraction_method,
+        }
+
+
+class BaseDateExtractor(ABC):
+    @abstractmethod
+    def extract(self, html: str) -> PublishDateResult:
+        pass
+
+
+class LLMDateExtractor(BaseDateExtractor):
+    """
+    Uses an LLM provider to determine:
+    - The publish date
+    - Where it was found (meta tag, class, property, JSON-LD, etc.)
+    """
+
+    DEFAULT_MODELS = {
+        "openai": "gpt-4o-mini",
+        "anthropic": "claude-3-haiku-20240307",
+        "ollama": "llama3.2",
+        "ollama-cloud": "gemma3:12b-cloud",
+    }
+
+    # Default Ollama endpoints
+    OLLAMA_LOCAL_URL = "http://localhost:11434"
+    # Ollama cloud uses native Ollama API format at /api/chat
+    OLLAMA_CLOUD_URL = "https://ollama.com"
+
+    def __init__(
+        self,
+        provider: Literal["openai", "anthropic", "ollama", "ollama-cloud"] = "ollama-cloud",
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,  # useful for ollama-cloud
+    ):
+        self.provider = provider
+        self.model = model or self.DEFAULT_MODELS.get(provider)
+        self.api_key = api_key
+        self.base_url = base_url
+        self._client = None
+
+    def _get_client(self):
+        if self._client:
+            return self._client
+
+        if self.provider == "openai":
+            from openai import OpenAI
+            self._client = OpenAI(
+                api_key=self.api_key or os.environ.get("OPENAI_API_KEY")
+            )
+
+        elif self.provider == "anthropic":
+            import anthropic
+            self._client = anthropic.Anthropic(
+                api_key=self.api_key or os.environ.get("ANTHROPIC_API_KEY")
+            )
+
+        elif self.provider == "ollama":
+              # Local Ollama - no API key needed
+              try:
+                  import httpx
+                  base_url = self.base_url or os.environ.get(
+                      "OLLAMA_BASE_URL", self.OLLAMA_LOCAL_URL
+                  )
+                  self._client = {"base_url": base_url, "httpx": httpx}
+              except ImportError:
+                  raise ImportError("httpx package required: pip install httpx")
+
+        elif self.provider == "ollama-cloud":
+            # Ollama cloud - uses native Ollama API format at /api/chat
+            # API key required for authentication
+            try:
+                import httpx
+                # API key from parameter or environment variable
+                api_key = self.api_key if self.api_key is not None else os.environ.get("OLLAMA_API_KEY", "")
+                base_url = self.base_url or os.environ.get("OLLAMA_BASE_URL", self.OLLAMA_CLOUD_URL)
+                self._client = {"base_url": base_url, "api_key": api_key, "httpx": httpx}
+            except ImportError:
+                raise ImportError("httpx package required: pip install httpx")
+        else:
+            raise ValueError(f"Unsupported provider: {self.provider}")
+        return self._client
+
+    def _call_ollama(self, prompt: str, max_tokens: int = 200) -> str:
+        """Make a request to Ollama API (local or cloud)."""
+        client = self._get_client()
+        httpx = client["httpx"]
+        base_url = client["base_url"]
+
+        headers = {"Content-Type": "application/json"}
+        # Only add Authorization header if API key is non-empty
+        if client.get("api_key"):
+            headers["Authorization"] = f"Bearer {client['api_key']}"
+
+        # Both local Ollama and Ollama Cloud use native Ollama API format
+        # Ollama Cloud: https://ollama.com/api/chat
+        # Local Ollama: http://localhost:11434/api/generate
+        if self.provider == "ollama-cloud":
+            # Ollama Cloud uses /api/chat with messages format
+            payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "options": {
+                    "num_predict": max_tokens,
+                    "temperature": 0.3,
+                },
+            }
+            endpoint = f"{base_url}/api/chat"
+            response = httpx.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            result = response.json()
+            # Ollama chat response format: {"message": {"content": "..."}}
+            return result.get("message", {}).get("content", "").strip()
+        else:
+            # Local Ollama uses /api/generate with prompt format
+            payload = {
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_predict": max_tokens,
+                    "temperature": 0.3,
+                },
+            }
+            endpoint = f"{base_url}/api/generate"
+            response = httpx.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result.get("response", "").strip()
+
+    def extract(self, html: str) -> PublishDateResult:
+        client = self._get_client()
+
+        prompt = f"""
+          You are analyzing raw HTML from a news article.
+
+          Task:
+          1. Identify the article publish date.
+          2. Identify the exact HTML element or property where it was found
+            (e.g., meta[property="article:published_time"],
+              div class="post-date", JSON-LD datePublished, etc.)
+
+          Return ONLY valid JSON:
+
+          {{
+            "publish_date": "...",
+            "source_hint": "...",
+            "confidence": 0.0-1.0
+          }}
+
+          HTML:
+          {html[:15000]}
+          """
+
+        try:
+            # OpenAI-compatible providers
+            if self.provider == "openai":
+              response = client.chat.completions.create(
+                  model=self.model,
+                  messages=[{"role": "user", "content": prompt}],
+                  max_tokens=200,
+                  temperature=0.3,
+              )
+              llm_response = response.choices[0].message.content.strip()
+
+            elif self.provider == "anthropic":
+              response = client.messages.create(
+                  model=self.model,
+                  max_tokens=200,
+                  messages=[{"role": "user", "content": prompt}],
+              )
+              llm_response = response.content[0].text.strip()
+
+            elif self.provider in ("ollama", "ollama-cloud"):
+              llm_response = self._call_ollama(prompt, max_tokens=200)
+              
+
+            else:
+                raise ValueError(f"Unsupported provider: {self.provider}")
+
+            data = parse_llm_json(llm_response)
+
+            return PublishDateResult(
+                publish_date=data.get("publish_date"),
+                source_hint=data.get("source_hint"),
+                confidence=float(data.get("confidence", 0.5)),
+                extraction_method=self.provider,
+            )
+
+        except Exception:
+            return PublishDateResult(
+                publish_date=None,
+                source_hint="LLM parse error",
+                confidence=0.0,
+                extraction_method=self.provider,
+            )
+
+def parse_llm_json(raw: str) -> Dict[str, Any]:
+    """
+    Extracts and parses JSON from an LLM response that may include
+    markdown code fences like ```json ... ```.
+    """
+
+    if not raw:
+        raise ValueError("Empty response")
+
+    # Remove triple backtick blocks (```json ... ```)
+    cleaned = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    cleaned = re.sub(r"\s*```$", "", cleaned.strip())
+
+    # Strip any leading/trailing whitespace again
+    cleaned = cleaned.strip()
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Failed to parse JSON: {e}\nCleaned string:\n{cleaned}")
+
+        
+
+
+def get_date_extractor(**kwargs) -> BaseDateExtractor:
+    """
+    Factory function to retrieve LLM-based date extractor.
+
+    Example:
+        extractor = get_date_extractor(
+            provider="ollama",
+            model="llama3.2"
+        )
+    """
+    return LLMDateExtractor(**kwargs)
