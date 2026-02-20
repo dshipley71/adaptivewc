@@ -57,6 +57,7 @@ class ContentExtractor:
         html: str,
         strategy: ExtractionStrategy,
         llm_provider: str | None = None,
+        ollama_base_url: str | None = None,
         llm_api_key: str | None = None 
     ) -> ExtractionResult:
         """
@@ -121,9 +122,10 @@ class ContentExtractor:
             metadata["date"] = detected_date
             metadata_confidences["date"] = date_confidence
           else:
-            print(f"===> Date extraction failed, moving to LLM attempt!")
+            print(f"===> Date extraction failed, moving to LLM attempt!. baseurl set to {ollama_base_url}")
             extractor = get_date_extractor(
               provider=llm_provider, 
+              base_url=ollama_base_url,
               api_key=llm_api_key
             )
 
@@ -650,6 +652,11 @@ class LLMDateExtractor(BaseDateExtractor):
         "ollama-cloud": "gemma3:12b-cloud",
     }
 
+    # Default Ollama endpoints
+    OLLAMA_LOCAL_URL = "http://localhost:11434"
+    # Ollama cloud uses native Ollama API format at /api/chat
+    OLLAMA_CLOUD_URL = "https://ollama.com"
+
     def __init__(
         self,
         provider: Literal["openai", "anthropic", "ollama", "ollama-cloud"] = "ollama-cloud",
@@ -662,7 +669,9 @@ class LLMDateExtractor(BaseDateExtractor):
         self.api_key = api_key
         self.base_url = base_url
         self._client = None
-        print(f"######### ==> provider is set to {self.provider}")
+        for x in [self.provider, self.model, self.api_key, self.base_url, self._client]:
+          print(x)
+          print("-----------------------------------------------------------")
 
     def _get_client(self):
         if self._client:
@@ -681,27 +690,91 @@ class LLMDateExtractor(BaseDateExtractor):
             )
 
         elif self.provider == "ollama":
-            # Local Ollama instance (http://localhost:11434 by default)
-            from openai import OpenAI
-            self._client = OpenAI(
-                base_url=self.base_url or "http://localhost:11434/v1",
-                api_key=self.api_key or "ollama",  # Ollama ignores api_key but required by client
-            )
+              # Local Ollama - no API key needed
+              try:
+                  import httpx
+                  base_url = self.base_url or os.environ.get(
+                      "OLLAMA_BASE_URL", self.OLLAMA_LOCAL_URL
+                  )
+                  self._client = {"base_url": base_url, "httpx": httpx}
+              except ImportError:
+                  raise ImportError("httpx package required: pip install httpx")
 
         elif self.provider == "ollama-cloud":
-            # Ollama Cloud (OpenAI-compatible endpoint)
-            from openai import OpenAI
-            self._client = OpenAI(
-                base_url=self.base_url or "https://api.ollama.ai/v1",
-                api_key=self.api_key or os.environ.get("OLLAMA_API_KEY"),
-            )
-            print(f"########========> ollama cloud initialized")
-
+            # Ollama cloud - uses native Ollama API format at /api/chat
+            # API key required for authentication
+            try:
+                import httpx
+                # API key from parameter or environment variable
+                api_key = self.api_key if self.api_key is not None else os.environ.get("OLLAMA_API_KEY", "")
+                base_url = self.base_url or os.environ.get("OLLAMA_BASE_URL", self.OLLAMA_CLOUD_URL)
+                self._client = {"base_url": base_url, "api_key": api_key, "httpx": httpx}
+                print(f"=====> self._client after provider is set: {self._client}")
+            except ImportError:
+                raise ImportError("httpx package required: pip install httpx")
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
 
-        print(f"#########==> self._client complete: {type(self._client)}")
+        print(f"====> before return, self.client is set tp {self._client}")
         return self._client
+
+    def _call_ollama(self, prompt: str, max_tokens: int = 200) -> str:
+        """Make a request to Ollama API (local or cloud)."""
+        client = self._get_client()
+        httpx = client["httpx"]
+        base_url = client["base_url"]
+
+        headers = {"Content-Type": "application/json"}
+        # Only add Authorization header if API key is non-empty
+        if client.get("api_key"):
+            headers["Authorization"] = f"Bearer {client['api_key']}"
+
+        # Both local Ollama and Ollama Cloud use native Ollama API format
+        # Ollama Cloud: https://ollama.com/api/chat
+        # Local Ollama: http://localhost:11434/api/generate
+        if self.provider == "ollama-cloud":
+            # Ollama Cloud uses /api/chat with messages format
+            payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "options": {
+                    "num_predict": max_tokens,
+                    "temperature": 0.3,
+                },
+            }
+            endpoint = f"{base_url}/api/chat"
+            response = httpx.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            result = response.json()
+            # Ollama chat response format: {"message": {"content": "..."}}
+            return result.get("message", {}).get("content", "").strip()
+        else:
+            # Local Ollama uses /api/generate with prompt format
+            payload = {
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_predict": max_tokens,
+                    "temperature": 0.3,
+                },
+            }
+            endpoint = f"{base_url}/api/generate"
+            response = httpx.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result.get("response", "").strip()
 
     def extract(self, html: str) -> PublishDateResult:
         client = self._get_client()
@@ -727,25 +800,27 @@ class LLMDateExtractor(BaseDateExtractor):
           {html[:15000]}
           """
 
-        print(f"#####==> prompt initiatilized. Size of it is: {len(prompt)}")
         try:
             # OpenAI-compatible providers
-            if self.provider in ["openai", "ollama", "ollama-cloud"]:
-              print(f"====> provider is {self.provider}")
+            if self.provider == "openai":
               response = client.chat.completions.create(
                   model=self.model,
                   messages=[{"role": "user", "content": prompt}],
-                  temperature=0.0,
+                  max_tokens=200,
+                  temperature=0.3,
               )
-              content = response.choices[0].message.content.strip()
+              return response.choices[0].message.content.strip()
 
             elif self.provider == "anthropic":
-                response = client.messages.create(
-                    model=self.model,
-                    max_tokens=500,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                content = response.content[0].text.strip()
+              response = client.messages.create(
+                  model=self.model,
+                  max_tokens=200,
+                  messages=[{"role": "user", "content": prompt}],
+              )
+              return response.content[0].text.strip()
+
+            elif self.provider in ("ollama", "ollama-cloud"):
+              return self._call_ollama(prompt, max_tokens=200)
 
             else:
                 raise ValueError(f"Unsupported provider: {self.provider}")
