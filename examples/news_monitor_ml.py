@@ -296,7 +296,6 @@ class MLNewsMonitor:
                 llm_kwargs["api_key"] = self.config.ollama_api_key
             if self.config.ollama_base_url:
                 llm_kwargs["ollama_base_url"] = self.config.ollama_base_url
-            print(f"####### ==> llm_kwargs: {llm_kwargs}")
 
             self.llm_generator = get_description_generator(
                 DescriptionMode.LLM,
