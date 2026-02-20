@@ -56,6 +56,8 @@ class ContentExtractor:
         url: str,
         html: str,
         strategy: ExtractionStrategy,
+        llm_provider: str | None = None,
+        llm_api_key: str | None = None 
     ) -> ExtractionResult:
         """
         Extract content from HTML using the provided strategy.
@@ -120,7 +122,11 @@ class ContentExtractor:
             metadata_confidences["date"] = date_confidence
           else:
             print(f"===> Date extraction failed, moving to LLM attempt!")
-            extractor = get_date_extractor("llm", provider="ollama-cloud")
+            extractor = get_date_extractor(
+              provider=llm_provider, 
+              api_key=llm_api_key
+            )
+
             result = extractor.extract(html)
             print(f"############# ==> result is {result}")
             metadata["date"] = result.publish_date
@@ -606,21 +612,14 @@ class ContentExtractor:
         return True
 
 
-class DateExtractionMode(str, Enum):
-    """Supported extraction modes."""
-    RULES = "rules"
-    LLM = "llm"
-
-
 @dataclass
 class PublishDateResult:
     """Structured publish date extraction result."""
 
     publish_date: Optional[str]
-    source_hint: Optional[str]  # e.g. meta[property="article:published_time"]
+    source_hint: Optional[str]
     confidence: float
-    extraction_method: str
-    extracted_at: datetime = field(default_factory=datetime.utcnow)
+    extraction_method: str  # LLM provider name
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -628,21 +627,18 @@ class PublishDateResult:
             "source_hint": self.source_hint,
             "confidence": self.confidence,
             "extraction_method": self.extraction_method,
-            "extracted_at": self.extracted_at.isoformat(),
         }
 
-class BaseDateExtractor(ABC):
-    """Abstract base class for publish date extractors."""
 
+class BaseDateExtractor(ABC):
     @abstractmethod
     def extract(self, html: str) -> PublishDateResult:
         pass
 
 
-
 class LLMDateExtractor(BaseDateExtractor):
     """
-    Uses an LLM to determine:
+    Uses an LLM provider to determine:
     - The publish date
     - Where it was found (meta tag, class, property, JSON-LD, etc.)
     """
@@ -658,9 +654,13 @@ class LLMDateExtractor(BaseDateExtractor):
         self,
         provider: Literal["openai", "anthropic", "ollama", "ollama-cloud"] = "ollama-cloud",
         model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,  # useful for ollama-cloud
     ):
         self.provider = provider
         self.model = model or self.DEFAULT_MODELS.get(provider)
+        self.api_key = api_key
+        self.base_url = base_url
         self._client = None
 
     def _get_client(self):
@@ -669,96 +669,111 @@ class LLMDateExtractor(BaseDateExtractor):
 
         if self.provider == "openai":
             from openai import OpenAI
-            self._client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            self._client = OpenAI(
+                api_key=self.api_key or os.environ.get("OPENAI_API_KEY")
+            )
 
         elif self.provider == "anthropic":
             import anthropic
             self._client = anthropic.Anthropic(
-                api_key=os.environ.get("ANTHROPIC_API_KEY")
+                api_key=self.api_key or os.environ.get("ANTHROPIC_API_KEY")
             )
 
+        elif self.provider == "ollama":
+            # Local Ollama instance (http://localhost:11434 by default)
+            from openai import OpenAI
+            self._client = OpenAI(
+                base_url=self.base_url or "http://localhost:11434/v1",
+                api_key=self.api_key or "ollama",  # Ollama ignores api_key but required by client
+            )
+
+        elif self.provider == "ollama-cloud":
+            # Ollama Cloud (OpenAI-compatible endpoint)
+            from openai import OpenAI
+            self._client = OpenAI(
+                base_url=self.base_url or "https://api.ollama.ai/v1",
+                api_key=self.api_key or os.environ.get("OLLAMA_API_KEY"),
+            )
+
+        else:
+            raise ValueError(f"Unsupported provider: {self.provider}")
+
+        print(f"#########==> self._client complete: {type(self._client)}")
         return self._client
 
     def extract(self, html: str) -> PublishDateResult:
         client = self._get_client()
 
         prompt = f"""
-            You are analyzing raw HTML from a news article.
+          You are analyzing raw HTML from a news article.
 
-            Task:
-            1. Identify the article publish date.
-            2. Identify the exact HTML element or property where it was found
-            (e.g., meta[property="article:published_time"], 
-                div class="post-date", JSON-LD datePublished, etc.)
+          Task:
+          1. Identify the article publish date.
+          2. Identify the exact HTML element or property where it was found
+            (e.g., meta[property="article:published_time"],
+              div class="post-date", JSON-LD datePublished, etc.)
 
-            Return ONLY valid JSON:
+          Return ONLY valid JSON:
 
-            {{
+          {{
             "publish_date": "...",
             "source_hint": "...",
             "confidence": 0.0-1.0
-            }}
+          }}
 
-            HTML:
-            {html[:15000]}
-        """
+          HTML:
+          {html[:15000]}
+          """
 
-        if self.provider == "openai":
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-            )
-            content = response.choices[0].message.content.strip()
-
-        elif self.provider == "anthropic":
-            response = client.messages.create(
-                model=self.model,
-                max_tokens=500,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            content = response.content[0].text.strip()
-
-        else:
-            raise ValueError("Unsupported provider")
-
+        print(f"#####==> prompt initiatilized. Size of it is: {len(prompt)}")
         try:
+            # OpenAI-compatible providers
+            if self.provider in ["openai", "ollama", "ollama-cloud"]:
+              print(f"====> provider is {self.provider}")
+              response = client.chat.completions.create(
+                  model=self.model,
+                  messages=[{"role": "user", "content": prompt}],
+                  temperature=0.0,
+              )
+              content = response.choices[0].message.content.strip()
+
+            elif self.provider == "anthropic":
+                response = client.messages.create(
+                    model=self.model,
+                    max_tokens=500,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                content = response.content[0].text.strip()
+
+            else:
+                raise ValueError(f"Unsupported provider: {self.provider}")
+
             data = json.loads(content)
+
         except Exception:
             return PublishDateResult(
                 publish_date=None,
                 source_hint="LLM parse error",
                 confidence=0.0,
-                extraction_method="llm"
+                extraction_method=self.provider,
             )
 
         return PublishDateResult(
             publish_date=data.get("publish_date"),
             source_hint=data.get("source_hint"),
             confidence=float(data.get("confidence", 0.5)),
-            extraction_method="llm"
+            extraction_method=self.provider,
         )
 
 
-def get_date_extractor(
-    mode: DateExtractionMode | str = DateExtractionMode.RULES,
-    **kwargs
-) -> BaseDateExtractor:
+def get_date_extractor(**kwargs) -> BaseDateExtractor:
     """
-    Factory function to retrieve date extractor.
+    Factory function to retrieve LLM-based date extractor.
 
-    Examples:
-        extractor = get_date_extractor("rules")
-        extractor = get_date_extractor("llm", provider="openai")
+    Example:
+        extractor = get_date_extractor(
+            provider="ollama",
+            model="llama3.2"
+        )
     """
-    if isinstance(mode, str):
-        mode = DateExtractionMode(mode)
-
-    if mode == DateExtractionMode.RULES:
-        return RulesBasedDateExtractor()
-
-    elif mode == DateExtractionMode.LLM:
-        return LLMDateExtractor(**kwargs)
-
-    else:
-        raise ValueError(f"Unknown mode: {mode}")
+    return LLMDateExtractor(**kwargs)

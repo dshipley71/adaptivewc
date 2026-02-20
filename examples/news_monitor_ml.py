@@ -921,7 +921,12 @@ class MLNewsMonitor:
         # Extract content
         if self.config.verbose:
             print(f"\n[10] CONTENT EXTRACTION")
-        extraction_result = self.content_extractor.extract(url, html, strategy)
+        extraction_result = self.content_extractor.extract(
+          url, 
+          html, 
+          strategy,
+          self.config.llm_provider,
+          self.config.ollama_api_key)
 
         if self.config.verbose:
             print(f"    Success: {extraction_result.success}")
