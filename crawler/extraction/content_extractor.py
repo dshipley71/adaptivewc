@@ -132,7 +132,7 @@ class ContentExtractor:
 
             metadata["date"] =  self._parse_date(result.publish_date)
             metadata_confidences["date"] = result.confidence
-            warnings.append("Date extraction failed")
+            warnings.append(f"Date was extracted via LLM with source hint at: {result.publish_date}")
 
         # Extract images
         images = []
