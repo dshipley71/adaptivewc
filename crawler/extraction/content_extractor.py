@@ -318,22 +318,6 @@ class ContentExtractor:
           if parsed:
               return parsed, 0.9
 
-        # 2️⃣ Check common meta tags
-        meta_properties = [
-            "article:published_time",
-            "article:modified_time",
-            "og:published_time",
-            "pubdate",
-            "publish-date",
-            "date",
-        ]
-
-        for prop in meta_properties:
-          tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
-          if tag and tag.get("content"):
-              parsed = self._parse_date(tag["content"])
-              if parsed:
-                  return parsed, 0.9
 
         # 3️⃣ Look for elements with date-like class/id names
         date_pattern = re.compile(r"(date|time|publish|posted)", re.IGNORECASE)
