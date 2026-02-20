@@ -13,7 +13,7 @@ import json
 import os
 import re
 import time
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Dict
 import re
 
 from abc import ABC, abstractmethod
@@ -122,7 +122,6 @@ class ContentExtractor:
             metadata["date"] = detected_date
             metadata_confidences["date"] = date_confidence
           else:
-            print(f"===> Date extraction failed, moving to LLM attempt!. baseurl set to {ollama_base_url}")
             extractor = get_date_extractor(
               provider=llm_provider, 
               base_url=ollama_base_url,
@@ -130,8 +129,8 @@ class ContentExtractor:
             )
 
             result = extractor.extract(html)
-            print(f"############# ==> result is {result}")
-            metadata["date"] = result.publish_date
+
+            metadata["date"] =  self._parse_date(result.publish_date)
             metadata_confidences["date"] = result.confidence
             warnings.append("Date extraction failed")
 
@@ -669,9 +668,6 @@ class LLMDateExtractor(BaseDateExtractor):
         self.api_key = api_key
         self.base_url = base_url
         self._client = None
-        for x in [self.provider, self.model, self.api_key, self.base_url, self._client]:
-          print(x)
-          print("-----------------------------------------------------------")
 
     def _get_client(self):
         if self._client:
@@ -709,13 +705,10 @@ class LLMDateExtractor(BaseDateExtractor):
                 api_key = self.api_key if self.api_key is not None else os.environ.get("OLLAMA_API_KEY", "")
                 base_url = self.base_url or os.environ.get("OLLAMA_BASE_URL", self.OLLAMA_CLOUD_URL)
                 self._client = {"base_url": base_url, "api_key": api_key, "httpx": httpx}
-                print(f"=====> self._client after provider is set: {self._client}")
             except ImportError:
                 raise ImportError("httpx package required: pip install httpx")
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
-
-        print(f"====> before return, self.client is set tp {self._client}")
         return self._client
 
     def _call_ollama(self, prompt: str, max_tokens: int = 200) -> str:
@@ -809,7 +802,7 @@ class LLMDateExtractor(BaseDateExtractor):
                   max_tokens=200,
                   temperature=0.3,
               )
-              return response.choices[0].message.content.strip()
+              llm_response = response.choices[0].message.content.strip()
 
             elif self.provider == "anthropic":
               response = client.messages.create(
@@ -817,15 +810,23 @@ class LLMDateExtractor(BaseDateExtractor):
                   max_tokens=200,
                   messages=[{"role": "user", "content": prompt}],
               )
-              return response.content[0].text.strip()
+              llm_response = response.content[0].text.strip()
 
             elif self.provider in ("ollama", "ollama-cloud"):
-              return self._call_ollama(prompt, max_tokens=200)
+              llm_response = self._call_ollama(prompt, max_tokens=200)
+              
 
             else:
                 raise ValueError(f"Unsupported provider: {self.provider}")
 
-            data = json.loads(content)
+            data = parse_llm_json(llm_response)
+
+            return PublishDateResult(
+                publish_date=data.get("publish_date"),
+                source_hint=data.get("source_hint"),
+                confidence=float(data.get("confidence", 0.5)),
+                extraction_method=self.provider,
+            )
 
         except Exception:
             return PublishDateResult(
@@ -835,12 +836,28 @@ class LLMDateExtractor(BaseDateExtractor):
                 extraction_method=self.provider,
             )
 
-        return PublishDateResult(
-            publish_date=data.get("publish_date"),
-            source_hint=data.get("source_hint"),
-            confidence=float(data.get("confidence", 0.5)),
-            extraction_method=self.provider,
-        )
+def parse_llm_json(raw: str) -> Dict[str, Any]:
+    """
+    Extracts and parses JSON from an LLM response that may include
+    markdown code fences like ```json ... ```.
+    """
+
+    if not raw:
+        raise ValueError("Empty response")
+
+    # Remove triple backtick blocks (```json ... ```)
+    cleaned = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    cleaned = re.sub(r"\s*```$", "", cleaned.strip())
+
+    # Strip any leading/trailing whitespace again
+    cleaned = cleaned.strip()
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Failed to parse JSON: {e}\nCleaned string:\n{cleaned}")
+
+        
 
 
 def get_date_extractor(**kwargs) -> BaseDateExtractor:
