@@ -803,6 +803,9 @@ class LLMDateExtractor(BaseDateExtractor):
             else:
                 raise ValueError(f"Unsupported provider: {self.provider}")
 
+            if not llm_response:
+              self.logger.warning(f"No response from the LLM. Provider: {self.provider}, Client: {self._get_client()}")
+
             data = parse_llm_json(llm_response)
 
             return PublishDateResult(
@@ -812,10 +815,10 @@ class LLMDateExtractor(BaseDateExtractor):
                 extraction_method=self.provider,
             )
 
-        except Exception:
+        except Exception as e:
             return PublishDateResult(
                 publish_date=None,
-                source_hint="LLM parse error",
+                source_hint=f"LLM parse error: {str(e)}",
                 confidence=0.0,
                 extraction_method=self.provider,
             )
