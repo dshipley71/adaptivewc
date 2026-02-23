@@ -49,13 +49,7 @@ with open("training_data/generic_categories.json", "r") as f:
 async def extract_news_categories(domains, monitor):
     """
     Extract news categories and their URLs from top-level navigation links.
-    Returns:
-    {
-        "cnn.com": {
-            "business": "https://www.cnn.com/business",
-            "politics": "https://www.cnn.com/politics"
-        }
-    }
+    Uses MLNewsMonitor.fetch_page instead of requests.
     """
     results = {}
 
@@ -74,7 +68,6 @@ async def extract_news_categories(domains, monitor):
 
         soup = BeautifulSoup(html, "html.parser")
 
-        # Focus on nav + header areas
         nav_containers = soup.find_all(["nav", "header"])
 
         for container in nav_containers:
@@ -88,13 +81,11 @@ async def extract_news_categories(domains, monitor):
                 full_url = urljoin(base_url, href)
                 parsed = urlparse(full_url)
 
-                # Must stay on same domain
                 if domain not in parsed.netloc:
                     continue
 
                 path = parsed.path.strip("/")
 
-                # Only top-level paths
                 if not path or "/" in path:
                     continue
                 if not path.isalpha():
@@ -104,10 +95,10 @@ async def extract_news_categories(domains, monitor):
                 if len(path) > 20:
                     continue
 
-                # Prefer the first clean URL we see
                 categories.setdefault(path, full_url)
 
         results[domain] = dict(sorted(categories.items()))
+
     return results
 
 
@@ -123,17 +114,7 @@ async def extract_category_articles(category_map, monitor, max_articles=5):
         "cnn.com": {"business": "https://www.cnn.com/business"}
     }
 
-    Return:
-    {
-        "cnn.com": {
-            "business": {
-                "https://www.cnn.com/business": [
-                    "https://www.cnn.com/... (articles with most '-' preferred)",
-                    ...
-                ]
-            }
-        }
-    }
+    Return structured articles, using MLNewsMonitor.fetch_page instead of requests.
     """
     results = {}
 
@@ -143,7 +124,6 @@ async def extract_category_articles(category_map, monitor, max_articles=5):
 
         for category, category_url in categories.items():
             candidate_articles = []
-            all_articles = []
 
             try:
               html = await get_html(category_url, monitor)
@@ -159,45 +139,35 @@ async def extract_category_articles(category_map, monitor, max_articles=5):
                 href = a["href"].strip()
                 full_url = urljoin(category_url, href)
                 parsed = urlparse(full_url)
-                all_articles.append(parsed)
 
-                # Must be same domain
                 if domain not in parsed.netloc:
                     continue
 
                 path = parsed.path.strip("/")
-
-                # Heuristic: articles usually have multiple path segments
                 segments = path.split("/")
+
                 if len(segments) < 2:
                     continue
 
-                # Look for article-like patterns
                 article_like = (
-                    re.search(r"\d{4}/\d{2}/\d{2}", path) or     # date-based
-                    re.search(r"\d{5,}", path) or               # numeric ID
-                    path.count("-") >= 2                       # long slug
+                    re.search(r"\d{4}/\d{2}/\d{2}", path) or
+                    re.search(r"\d{5,}", path) or
+                    path.count("-") >= 2
                 )
 
                 if not article_like:
                     continue
 
-                # Filter pagination
                 if re.search(r"/page/\d+/?$", parsed.path):
                     continue
 
-                # Must start with category
                 if not path.startswith(category):
                     continue
 
-                # candidate_articles.append((full_url, len(path)))
                 candidate_articles.append((full_url, path.count("-")))
 
-            # Sort articles by number of '-' in descending order
             candidate_articles = list(set(candidate_articles))
             candidate_articles.sort(key=lambda x: x[1], reverse=True)
-
-            # Keep only top `max_articles`
             articles = [url for url, _ in candidate_articles[:max_articles]]
 
             if articles:
@@ -205,7 +175,6 @@ async def extract_category_articles(category_map, monitor, max_articles=5):
 
         if domain_results:
             results[domain] = domain_results
-            # save_progress(results)
 
     return results
 
@@ -249,14 +218,11 @@ def restructure_articles(article_examples):
     return article_map
 
 
-async def get_html(url, monitor):
-    result = await monitor.fetch_page(url)
-    if not result:
-        return None
-
-    html, status_code = result
-
-    if status_code != 200:
+def get_html(url, monitor):
+    response = requests.get(url)
+    html = response.text
+    
+    if response.status_code != 200:
         if html and monitor.html_captcha_check(html, url):
             print("==========> Captcha detected")
         else:
