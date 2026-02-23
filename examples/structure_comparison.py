@@ -46,7 +46,7 @@ with open("training_data/generic_categories.json", "r") as f:
 
 
 
-def extract_news_categories(domains, timeout=10):
+async def extract_news_categories(domains, monitor):
     """
     Extract news categories and their URLs from top-level navigation links.
     Returns:
@@ -64,17 +64,15 @@ def extract_news_categories(domains, timeout=10):
         categories = {}
 
         try:
-            resp = requests.get(
-                base_url,
-                timeout=timeout,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            resp.raise_for_status()
+          html = await get_html(base_url, monitor)
+          if not html:
+            continue
+           
         except Exception:
             results[domain] = {}
             continue
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
 
         # Focus on nav + header areas
         nav_containers = soup.find_all(["nav", "header"])
@@ -118,7 +116,7 @@ ARTICLE_EXCLUDES = {
 }
 
 
-def extract_category_articles(category_map, max_articles=5, timeout=10):
+async def extract_category_articles(category_map, monitor, max_articles=5):
     """
     Given a category map like:
     {
@@ -148,17 +146,14 @@ def extract_category_articles(category_map, max_articles=5, timeout=10):
             all_articles = []
 
             try:
-                resp = requests.get(
-                    category_url,
-                    timeout=timeout,
-                    headers={"User-Agent": "Mozilla/5.0"},
-                )
-                resp.raise_for_status()
+              html = await get_html(category_url, monitor)
+              if not html:
+                continue
             except Exception as e:
               print(f"========> Issue with getting {domain} {category} article: {e}")
               continue
 
-            soup = BeautifulSoup(resp.text, "html.parser")
+            soup = BeautifulSoup(html, "html.parser")
 
             for a in soup.find_all("a", href=True):
                 href = a["href"].strip()
@@ -265,24 +260,28 @@ async def get_html(url, monitor):
         if html and monitor.html_captcha_check(html, url):
             print("==========> Captcha detected")
         else:
-            print(f"==========> Non-200 status: {status_code}")
+            print(f"==========> Non-200 status: {status_code} for {url}")
         return None
 
     return html
 
-def get_article_structure(url, page_type, monitor):
-  html = get_html(url, monitor, timeout=3)
+async def get_article_structure(url, page_type, monitor):
+  html = await get_html(url, monitor)
+  if not html:
+    return None
   structure = monitor.structure_analyzer.analyze(html, url, page_type)
   return structure
 
 
-def compare_structures(article_map, monitor):
+async def compare_structures(article_map, monitor):
     change_detector = ChangeDetector(logger=None)
     structure_dict = {}
 
     for article in tqdm(article_map):
         try:
-          struct = get_article_structure(article['url'], article['category'], monitor)
+          struct = await get_article_structure(article['url'], article['category'], monitor)
+          if struct is None:
+            continue
           structure_dict[f"{article['domain']} {article['category']}"] = struct
         except Exception as e:
           print(f"========> Error when trying to get structure for {article['url']} {article['category']} --> {e}")
@@ -347,7 +346,7 @@ def confusion_matrix(data, categories_substr=None, size=(8,6)):
 
 
 
-def compare_websites(
+async def compare_websites(
     urls: list, 
     monitor: MLNewsMonitor, 
     generic_categories_json: str ="training_data/generic_categories.json"
@@ -356,9 +355,11 @@ def compare_websites(
     config = MLMonitorConfig(model_dir = "ml_models_news")
     monitor = MLNewsMonitor(config)
     monitor.start()
-  news_categories = extract_news_categories(urls)
-  article_examples = extract_category_articles(news_categories, max_articles=3, timeout=5)
+  news_categories = await extract_news_categories(urls, monitor=monitor)
+  article_examples = await extract_category_articles(news_categories, monitor=monitor, max_articles=1)
+  
   article_examples = restructure_articles(article_examples)
-  return compare_structures(article_examples, monitor)
+  output = await compare_structures(article_examples, monitor)
+  return output
 
 
