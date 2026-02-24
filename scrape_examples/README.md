@@ -11,3 +11,4 @@ craped. If the request returned something other than a 200 status code
 <b><u>Captcha Examples</u></b>
 * <u>slider_examples.zip</u>: Folder containing slider captcha examples and t
 he HTML associated with them, scraped from https://2captcha.com/demo/geetest-v4.
+* <u>alphanumeric_lang-code.zip</u>: 100 alphanumeric examples of different languages captchas & associated HTML from captcha.com 
