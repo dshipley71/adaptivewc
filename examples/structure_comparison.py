@@ -46,7 +46,7 @@ with open("training_data/generic_categories.json", "r") as f:
 
 
 
-async def extract_news_categories(domains, monitor):
+def extract_news_categories(domains, monitor):
     """
     Extract news categories and their URLs from top-level navigation links.
     Uses MLNewsMonitor.fetch_page instead of requests.
@@ -58,8 +58,9 @@ async def extract_news_categories(domains, monitor):
         categories = {}
 
         try:
-          html = await get_html(base_url, monitor)
+          html = get_html(base_url, monitor)
           if not html:
+            print(f"====> {base_url} has no html")
             continue
            
         except Exception:
@@ -99,6 +100,8 @@ async def extract_news_categories(domains, monitor):
 
         results[domain] = dict(sorted(categories.items()))
 
+    if all(isinstance(v, dict) and all(isinstance(inner_v, list) and len(inner_v) == 0 for inner_v in v.values()) for v in results.values()):
+      raise Exception("No news categories")
     return results
 
 
@@ -107,7 +110,7 @@ ARTICLE_EXCLUDES = {
 }
 
 
-async def extract_category_articles(category_map, monitor, max_articles=5):
+def extract_category_articles(category_map, monitor, max_articles=5):
     """
     Given a category map like:
     {
@@ -126,7 +129,7 @@ async def extract_category_articles(category_map, monitor, max_articles=5):
             candidate_articles = []
 
             try:
-              html = await get_html(category_url, monitor)
+              html = get_html(category_url, monitor)
               if not html:
                 continue
             except Exception as e:
@@ -226,26 +229,26 @@ def get_html(url, monitor):
         if html and monitor.html_captcha_check(html, url):
             print("==========> Captcha detected")
         else:
-            print(f"==========> Non-200 status: {status_code} for {url}")
+            print(f"==========> Non-200 status: {response.status_code} for {url}")
         return None
 
     return html
 
-async def get_article_structure(url, page_type, monitor):
-  html = await get_html(url, monitor)
+def get_article_structure(url, page_type, monitor):
+  html = get_html(url, monitor)
   if not html:
     return None
   structure = monitor.structure_analyzer.analyze(html, url, page_type)
   return structure
 
 
-async def compare_structures(article_map, monitor):
+def compare_structures(article_map, monitor):
     change_detector = ChangeDetector(logger=None)
     structure_dict = {}
 
     for article in tqdm(article_map):
         try:
-          struct = await get_article_structure(article['url'], article['category'], monitor)
+          struct = get_article_structure(article['url'], article['category'], monitor)
           if struct is None:
             continue
           structure_dict[f"{article['domain']} {article['category']}"] = struct
@@ -312,7 +315,7 @@ def confusion_matrix(data, categories_substr=None, size=(8,6)):
 
 
 
-async def compare_websites(
+def compare_websites(
     urls: list, 
     monitor: MLNewsMonitor, 
     generic_categories_json: str ="training_data/generic_categories.json"
@@ -321,11 +324,12 @@ async def compare_websites(
     config = MLMonitorConfig(model_dir = "ml_models_news")
     monitor = MLNewsMonitor(config)
     monitor.start()
-  news_categories = await extract_news_categories(urls, monitor=monitor)
-  article_examples = await extract_category_articles(news_categories, monitor=monitor, max_articles=1)
-  
+  news_categories = extract_news_categories(urls, monitor=monitor)
+  article_examples = extract_category_articles(news_categories, monitor=monitor, max_articles=1)
+  print(f"====> article examples: {article_examples}")
   article_examples = restructure_articles(article_examples)
-  output = await compare_structures(article_examples, monitor)
+  print(f"=====> restructured: {article_examples}")
+  output = compare_structures(article_examples, monitor)
   return output
 
 
