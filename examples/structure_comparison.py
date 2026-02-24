@@ -326,9 +326,7 @@ def compare_websites(
     monitor.start()
   news_categories = extract_news_categories(urls, monitor=monitor)
   article_examples = extract_category_articles(news_categories, monitor=monitor, max_articles=1)
-  print(f"====> article examples: {article_examples}")
   article_examples = restructure_articles(article_examples)
-  print(f"=====> restructured: {article_examples}")
   output = compare_structures(article_examples, monitor)
   return output
 
