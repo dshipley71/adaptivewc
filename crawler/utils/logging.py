@@ -25,17 +25,21 @@ def setup_logging(
         format_type: Output format ('json' or 'console').
         log_file: Optional file path to write logs to.
     """
-    # Set the log level
     log_level = getattr(logging, level.upper(), logging.INFO)
 
-    # Configure standard library logging
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        handlers.append(file_handler)
+
     logging.basicConfig(
         level=log_level,
-        stream=sys.stdout,
+        handlers=handlers,
         format="%(message)s",
+        force=True,
     )
 
-    # Determine processors based on format
     shared_processors: list[structlog.types.Processor] = [
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,

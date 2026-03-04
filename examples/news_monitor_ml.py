@@ -1282,6 +1282,18 @@ async def main() -> None:
         action="store_true",
         help="Export training data to JSONL and exit",
     )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Export training data to JSONL and exit",
+    )
+    parser.add_argument(
+        "--log-format",
+        type=str,
+        default="console",
+        help="Export training data to JSONL and exit",
+    )
 
     args = parser.parse_args()
 
@@ -1292,7 +1304,9 @@ async def main() -> None:
     # Setup logging
     setup_logging(
         level="DEBUG" if args.verbose else "INFO",
-        format_type="console",
+        format_type=args.log_format,
+        log_file=args.log_file
+
     )
 
     # Suppress httpx INFO logs (redirect messages, etc.)
