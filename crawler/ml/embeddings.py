@@ -678,8 +678,18 @@ class StructureEmbeddingModel:
     def embed_text(self, text: str) -> list[float]:
         """Create embedding from text."""
         model = self._load_model()
+        tokenizer = model.tokenizer
+        input_tokens = tokenizer(
+            text,
+            return_tensors="pt",
+            truncation=True
+        )
+        input_token_count = input_tokens["input_ids"].shape[1]
         embedding = model.encode(text, convert_to_numpy=True)
-        return embedding.tolist()
+        output_token_count = len(embedding)
+
+        
+        return [embedding.tolist(), {'input_token_count': input_token_count, 'output_token_count': output_token_count}]
 
     def embed_structure(self, structure: PageStructure) -> StructureEmbedding:
         """
@@ -695,7 +705,8 @@ class StructureEmbeddingModel:
         text = self._description_generator.generate(structure)
 
         # Create embedding
-        embedding = self.embed_text(text)
+        embedding, token_dict = self.embed_text(text)
+        print(f"===> in embed_structure, token dict is: {token_dict}")
 
         return StructureEmbedding(
             domain=structure.domain,
@@ -703,7 +714,7 @@ class StructureEmbeddingModel:
             embedding=embedding,
             text_description=text,
             model_name=self.model_name,
-        )
+        ), token_dict
 
     def embed_structures_batch(
         self,
