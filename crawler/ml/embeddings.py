@@ -412,7 +412,7 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
 
         return self._client
 
-    def _call_ollama(self, prompt: str, max_tokens: int = 200) -> str:
+    def _call_ollama(self, prompt: str, max_tokens: int = 200) -> tuple:
         """Make a request to Ollama API (local or cloud)."""
         client = self._get_client()
         httpx = client["httpx"]
@@ -446,8 +446,16 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
             )
             response.raise_for_status()
             result = response.json()
+
+            input_tokens = result.get("prompt_eval_count")
+            output_tokens = result.get("eval_count")
+            token_dict = {
+              'llm_desc_input_tokens': input_tokens,
+              'llm_desc_output_tokens': output_tokens,
+              }
+
             # Ollama chat response format: {"message": {"content": "..."}}
-            return result.get("message", {}).get("content", "").strip()
+            return result.get("message", {}).get("content", "").strip(), token_dict
         else:
             # Local Ollama uses /api/generate with prompt format
             payload = {
@@ -468,7 +476,14 @@ class LLMDescriptionGenerator(BaseDescriptionGenerator):
             )
             response.raise_for_status()
             result = response.json()
-            return result.get("response", "").strip()
+
+            input_tokens = result.get("prompt_eval_count")
+            output_tokens = result.get("eval_count")
+            token_dict = {
+              'llm_desc_input_tokens': input_tokens,
+              'llm_desc_output_tokens': output_tokens,
+              }
+            return result.get("response", "").strip(), token_dict
 
     def _structure_to_json(self, structure: PageStructure) -> str:
         """Convert structure to JSON for LLM context."""
@@ -534,7 +549,8 @@ Generate a 2-3 sentence description that captures the essence of this page struc
             return response.content[0].text.strip()
 
         elif self.provider in ("ollama", "ollama-cloud"):
-            return self._call_ollama(prompt, max_tokens=200)
+            output, token_dict = self._call_ollama(prompt, max_tokens=200)
+            return output, token_dict
 
         else:
             raise ValueError(f"Unknown provider: {self.provider}")
@@ -584,7 +600,8 @@ Generate a 2-3 sentence description of the key changes and their potential impac
             return response.content[0].text.strip()
 
         elif self.provider in ("ollama", "ollama-cloud"):
-            return self._call_ollama(prompt, max_tokens=300)
+            output = self._call_ollama(prompt, max_tokens=300)
+            return output
 
         else:
             raise ValueError(f"Unknown provider: {self.provider}")
@@ -633,7 +650,8 @@ def get_description_generator(
     if mode == DescriptionMode.RULES:
         return RulesBasedDescriptionGenerator()
     elif mode == DescriptionMode.LLM:
-        return LLMDescriptionGenerator(**kwargs)
+        llmresults = LLMDescriptionGenerator(**kwargs)
+        return llmresults
     else:
         raise ValueError(f"Unknown description mode: {mode}")
 

@@ -633,8 +633,9 @@ class MLNewsMonitor:
         Returns:
             MLContentChange if changes detected, None otherwise.
         """
-        embed_token_dict = None
-        llm_date_dict = None
+        embed_token_dict = {}
+        llm_date_dict = {}
+        desc_token_dict = {}
         self.logger.info("Checking URL (ML)", url=url)
 
         # Verbose: Start check
@@ -843,12 +844,13 @@ class MLNewsMonitor:
                         llm_description = self.llm_generator.generate_for_change_detection(
                             stored_structure, current_structure
                         )
+
                         self.logger.info(
                             "LLM generated change description",
                             description=llm_description[:100] + "...",
                         )
                         if self.config.verbose:
-                            print(f"    LLM description: {llm_description[:200]}...")
+                            print(f"   (852) LLM description: {llm_description[:200]}...")
                     except Exception as e:
                         self.logger.warning("LLM description failed", error=str(e))
                         if self.config.verbose:
@@ -897,9 +899,11 @@ class MLNewsMonitor:
                 if self.config.verbose:
                     print(f"    Generating LLM description of structure...")
                 try:
-                    llm_description = self.llm_generator.generate(current_structure)
+                    llm_description, desc_token_dict = self.llm_generator.generate(current_structure)
+
+
                     if self.config.verbose:
-                        print(f"    LLM description: {llm_description[:200] if llm_description else 'None'}...")
+                        print(f"   (903) LLM description: {llm_description[:200] if llm_description else 'None'}...")
                 except Exception as e:
                     self.logger.warning("LLM description failed", error=str(e))
                     if self.config.verbose:
@@ -934,7 +938,6 @@ class MLNewsMonitor:
           self.config.ollama_api_key)
         if llm_date_dict:
           llm_date_dict['url'] = url
-          self.logger.warning(f"=====> llm date dict return in news monitor looks like {llm_date_dict}")
 
         if self.config.verbose:
             print(f"    Success: {extraction_result.success}")
@@ -994,6 +997,11 @@ class MLNewsMonitor:
             print(f"    Total changes in history: {len(self._change_history)}")
             print(f"{'='*70}\n")
 
+        print(f"===> token dict types:")
+        for tdict in [embed_token_dict, llm_date_dict, desc_token_dict]:
+          print(type(tdict))
+        all_token_dict = embed_token_dict | llm_date_dict | desc_token_dict
+        self.logger.warning(f"TOKEN DICTS: {all_token_dict}")
         return change
 
     async def check_all_urls(
@@ -1162,7 +1170,7 @@ def print_ml_change(change: MLContentChange) -> None:
     print(f"  Type Confidence: {change.page_type_confidence:.1%}" if change.page_type_confidence else "  Type Confidence: N/A")
 
     if change.llm_description:
-        print(f"\nLLM Description:")
+        print(f"\n(1167) LLM Description:")
         print(f"  {change.llm_description}")
 
     if change.extracted_content and change.extracted_content.content:
@@ -1310,7 +1318,7 @@ async def main() -> None:
 
     # Setup logging
     setup_logging(
-        level="DEBUG" if args.verbose else "INFO",
+        level="DEBUG" if args.verbose else "WARNING",
         format_type=args.log_format,
         log_file=args.log_file
 

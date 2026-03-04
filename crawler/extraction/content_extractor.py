@@ -116,7 +116,7 @@ class ContentExtractor:
                   warnings.append(f"Metadata '{key}' extraction failed")
 
         # Extract date
-        date_token_dict = None
+        date_token_dict = {}
         if "date" not in metadata:
           detected_date, date_confidence = self._extract_date(soup)
           if detected_date:
