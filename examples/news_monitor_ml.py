@@ -691,7 +691,9 @@ class MLNewsMonitor:
             print(f"    Content hash: {current_structure.content_hash[:16]}...")
 
         # ML: Compute structure embedding
-        current_embedding_obj = self.embedding_model.embed_structure(current_structure)
+        current_embedding_obj, token_dict = self.embedding_model.embed_structure(current_structure)
+        token_dict['url'] = url
+        self.logger.warning(token_dict)
         current_embedding = current_embedding_obj.embedding
 
         # Verbose: Embedding
