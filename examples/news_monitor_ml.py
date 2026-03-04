@@ -633,6 +633,8 @@ class MLNewsMonitor:
         Returns:
             MLContentChange if changes detected, None otherwise.
         """
+        embed_token_dict = None
+        llm_date_dict = None
         self.logger.info("Checking URL (ML)", url=url)
 
         # Verbose: Start check
@@ -691,10 +693,10 @@ class MLNewsMonitor:
             print(f"    Content hash: {current_structure.content_hash[:16]}...")
 
         # ML: Compute structure embedding
-        current_embedding_obj, token_dict = self.embedding_model.embed_structure(current_structure)
-        token_dict['url'] = url
-        self.logger.warning(token_dict)
+        current_embedding_obj, embed_token_dict = self.embedding_model.embed_structure(current_structure)
         current_embedding = current_embedding_obj.embedding
+        embed_token_dict['url'] = url
+        self.logger.warning(f"===> embed_token_dict: {embed_token_dict}")
 
         # Verbose: Embedding
         if self.config.verbose:
@@ -931,6 +933,7 @@ class MLNewsMonitor:
           self.config.ollama_base_url,
           self.config.ollama_api_key)
         if llm_date_dict:
+          llm_date_dict['url'] = url
           self.logger.warning(f"=====> llm date dict return in news monitor looks like {llm_date_dict}")
 
         if self.config.verbose:

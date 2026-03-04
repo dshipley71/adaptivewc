@@ -689,7 +689,8 @@ class StructureEmbeddingModel:
         output_token_count = len(embedding)
 
         
-        return [embedding.tolist(), {'input_token_count': input_token_count, 'output_token_count': output_token_count}]
+        token_dict = {'embed_input_tokens': input_token_count, 'embed_output_tokens': output_token_count}
+        return [embedding.tolist(), token_dict]
 
     def embed_structure(self, structure: PageStructure) -> StructureEmbedding:
         """
@@ -706,7 +707,6 @@ class StructureEmbeddingModel:
 
         # Create embedding
         embedding, token_dict = self.embed_text(text)
-        print(f"===> in embed_structure, token dict is: {token_dict}")
 
         return StructureEmbedding(
             domain=structure.domain,
