@@ -921,13 +921,15 @@ class MLNewsMonitor:
         # Extract content
         if self.config.verbose:
             print(f"\n[10] CONTENT EXTRACTION")
-        extraction_result = self.content_extractor.extract(
+        extraction_result, llm_date_dict = self.content_extractor.extract(
           url, 
           html, 
           strategy,
           self.config.llm_provider,
           self.config.ollama_base_url,
           self.config.ollama_api_key)
+        if llm_date_dict:
+          self.logger.warning(f"=====> llm date dict return in news monitor looks like {llm_date_dict}")
 
         if self.config.verbose:
             print(f"    Success: {extraction_result.success}")

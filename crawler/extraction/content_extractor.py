@@ -116,6 +116,7 @@ class ContentExtractor:
                   warnings.append(f"Metadata '{key}' extraction failed")
 
         # Extract date
+        date_token_dict = None
         if "date" not in metadata:
           detected_date, date_confidence = self._extract_date(soup)
           if detected_date:
@@ -128,7 +129,7 @@ class ContentExtractor:
               api_key=llm_api_key
             )
 
-            result = extractor.extract(html)
+            result, date_token_dict = extractor.extract(html)
 
             metadata["date"] =  self._parse_date(result.publish_date)
             metadata_confidences["date"] = result.confidence
@@ -201,7 +202,7 @@ class ContentExtractor:
             warnings=warnings,
             strategy_used=f"{strategy.domain}:{strategy.page_type}:v{strategy.version}",
             duration_ms=duration_ms,
-        )
+        ), date_token_dict
 
     def _extract_with_rule(
         self,
@@ -729,8 +730,17 @@ class LLMDateExtractor(BaseDateExtractor):
             )
             response.raise_for_status()
             result = response.json()
+
+            # ---- Extract token counts ----
+            input_tokens = result.get("prompt_eval_count")
+            output_tokens = result.get("eval_count")
+            token_dict = {
+              'llm_date_input_tokens': input_tokens,
+              'llm_date_output_tokens': output_tokens,
+              }
+
             # Ollama chat response format: {"message": {"content": "..."}}
-            return result.get("message", {}).get("content", "").strip()
+            return result.get("message", {}).get("content", "").strip(), token_dict
         else:
             # Local Ollama uses /api/generate with prompt format
             payload = {
@@ -751,7 +761,15 @@ class LLMDateExtractor(BaseDateExtractor):
             )
             response.raise_for_status()
             result = response.json()
-            return result.get("response", "").strip()
+             # ---- Extract token counts ----
+            input_tokens = result.get("prompt_eval_count")
+            output_tokens = result.get("eval_count")
+            token_dict = {
+              'llm_date_input_tokens': input_tokens,
+              'llm_date_output_tokens': output_tokens,
+              }
+
+            return result.get("response", "").strip(), token_dict
 
     def extract(self, html: str) -> PublishDateResult:
         client = self._get_client()
@@ -797,7 +815,7 @@ class LLMDateExtractor(BaseDateExtractor):
               llm_response = response.content[0].text.strip()
 
             elif self.provider in ("ollama", "ollama-cloud"):
-              llm_response = self._call_ollama(prompt, max_tokens=200)
+              llm_response, token_dict = self._call_ollama(prompt, max_tokens=200)
               
 
             else:
@@ -813,7 +831,7 @@ class LLMDateExtractor(BaseDateExtractor):
                 source_hint=data.get("source_hint"),
                 confidence=float(data.get("confidence", 0.5)),
                 extraction_method=self.provider,
-            )
+            ), token_dict
 
         except Exception as e:
             return PublishDateResult(
@@ -821,7 +839,7 @@ class LLMDateExtractor(BaseDateExtractor):
                 source_hint=f"LLM parse error: {str(e)}",
                 confidence=0.0,
                 extraction_method=self.provider,
-            )
+            ), token_dict
 
 def parse_llm_json(raw: str) -> Dict[str, Any]:
     """
