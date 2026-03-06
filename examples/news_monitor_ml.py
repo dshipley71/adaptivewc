@@ -193,7 +193,7 @@ class MLMonitorConfig:
     check_interval: int = 300  # 5 minutes
     redis_url: str = "redis://localhost:6379/0"
     output_dir: str = "./news_monitor_output_ml"
-    user_agent: str = "NewsMonitorML/1.0 (ML-Powered Change Detection)"
+    user_agent: str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     respect_robots: bool = True
     max_retries: int = 3
     request_timeout: float = 30.0
