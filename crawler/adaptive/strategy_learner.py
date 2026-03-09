@@ -22,6 +22,7 @@ class SelectorCandidate:
     confidence: float
     sample_count: int = 0
     success_rate: float = 1.0
+    extraction_type: str = "css"  # "css", "structured", "attribute", etc.
     last_used: datetime = field(default_factory=datetime.utcnow)
 
     def to_dict(self) -> dict[str, Any]:
@@ -31,6 +32,7 @@ class SelectorCandidate:
             "confidence": self.confidence,
             "sample_count": self.sample_count,
             "success_rate": self.success_rate,
+            "extraction_type": self.extraction_type,
             "last_used": self.last_used.isoformat(),
         }
 
@@ -94,11 +96,13 @@ class StrategyLearner:
 
     # Common date patterns
     DATE_PATTERNS = [
-        ("time[datetime]", 0.95),
+        ("meta[property='article:published_time']", 0.96),
+        ("meta[property='og:published_time']", 0.95),
+        ("meta[itemprop='datePublished']", 0.95),
+        ("time[datetime]", 0.93),
         (".published-date", 0.85),
         (".post-date", 0.85),
         (".date", 0.7),
-        ("[itemprop='datePublished']", 0.9),
     ]
 
     # Common author patterns
@@ -153,9 +157,20 @@ class StrategyLearner:
         )
 
         # Find date selector
-        date_candidate = self._find_best_selector(
-            soup, self.DATE_PATTERNS, "date"
-        )
+        structured_date = self._extract_structured_date(soup)
+        
+        if structured_date:
+            # Use structured date as a high-confidence candidate
+            date_candidate = SelectorCandidate(
+                selector="datePublished",       # just a name, not a CSS selector
+                extraction_type="structured",  # tells extractor to handle it specially
+                confidence=0.99,
+            )
+        else:
+            # Fallback to CSS selectors
+            date_candidate = self._find_best_selector(
+                soup, self.DATE_PATTERNS, "date"
+            )
 
         # Find author selector
         author_candidate = self._find_best_selector(
@@ -343,6 +358,38 @@ class StrategyLearner:
                 primary=candidate.selector,
                 confidence=candidate.confidence * 0.8,  # Penalty for change
             )
+
+        return None
+
+    def _extract_structured_date(self, soup: BeautifulSoup) -> str | None:
+        import json
+
+        # JSON-LD
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                if not script.string:
+                    continue
+
+                data = json.loads(script.string)
+                items = data if isinstance(data, list) else [data]
+
+                for item in items:
+                    if isinstance(item, dict):
+                        for key in ("datePublished", "dateCreated", "dateModified"):
+                            if item.get(key):
+                                return item[key]
+            except Exception:
+                continue
+
+        # Meta tags
+        tag = soup.select_one(
+            "meta[property='article:published_time'], "
+            "meta[property='og:published_time'], "
+            "meta[itemprop='datePublished']"
+        )
+
+        if tag and tag.get("content"):
+            return tag["content"]
 
         return None
 
