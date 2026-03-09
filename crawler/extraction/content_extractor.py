@@ -227,11 +227,11 @@ class ContentExtractor:
               # Extract from all matching elements and join
               texts = []
               for elem in elements:
+                if not rule.attribute_name and "date" in rule.primary or "time" in rule.primary:
+                    rule.attribute_name = "date"
                 text = self._extract_text_from_element(
                     elem, rule.extraction_method, rule.attribute_name
                 )
-                if "time" in rule.primary or "date" in rule.primary:
-                  text = self._parse_date(text)
                 if text:
                   texts.append(text)
               if texts:
@@ -414,7 +414,15 @@ class ContentExtractor:
             Extracted string or None.
         """
         try:
-          if extraction_method == "text":
+          if attribute_name == "date":
+            date_value = (
+                element.get("datetime")
+                or element.get("content")
+                or element.get_text(strip=True, separator=" ")
+            )
+            date_value =  self._parse_date(date_value)
+            return date_value if date_value else None
+          elif extraction_method == "text":
               text = element.get_text(strip=True, separator=" ")
               return text if text else None
           elif extraction_method == "html":
