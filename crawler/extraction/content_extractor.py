@@ -205,84 +205,24 @@ class ContentExtractor:
         )
 
     def _extract_with_rule(
-      self,
-      soup: BeautifulSoup,
-      rule: SelectorRule,
-      ) -> tuple[str | None, float]:
-      """
-      Apply a selector rule to extract text with fallback handling.
-      """
+        self,
+        soup: BeautifulSoup,
+        rule: SelectorRule,
+    ) -> tuple[str | None, float]:
 
-      # --- Structured data extraction (date only) ---
-      try:
-          if rule.extraction_method == "structured":
-            print(f"======> extraction method was structured")
+        # Structured data
+        if rule.extraction_method == "structured":
             text = self._extract_structured_data(soup)
             if text:
-              print(f"======> found structured date info: {text}, {rule.confidence}")
-              return text, rule.confidence
-      except Exception as e:
-          self.logger.info("Structured extraction failed", error=str(e))
+                return text, rule.confidence
 
-      # --- Primary selector ---
-      try:
-          elements = soup.select(rule.primary)
+        # Primary selector
+        text = self._extract_from_selector(soup, rule.primary, rule)
+        if text:
+            return text, rule.confidence
 
-          if elements:
-              texts = []
-
-              for elem in elements:
-                  text = self._extract_text_from_element(
-                      elem, rule.extraction_method, rule.attribute_name
-                  )
-
-                  if "time" in rule.primary or "date" in rule.primary:
-                      text = self._parse_date(text)
-
-                  if text:
-                      texts.append(text)
-
-              if texts:
-                  if "time" in rule.primary or "date" in rule.primary:
-                      texts = [min(texts, default=None)]
-
-                  combined = "\n\n".join(set(texts))
-                  return combined, rule.confidence
-
-      except Exception as e:
-          self.logger.warning(
-              "Primary selector failed",
-              selector=rule.primary,
-              error=str(e),
-          )
-
-      # --- Fallback selectors ---
-      for i, fallback in enumerate(rule.fallbacks):
-          try:
-              elements = soup.select(fallback)
-              if elements:
-                  texts = []
-
-                  for elem in elements:
-                      text = self._extract_text_from_element(
-                          elem, rule.extraction_method, rule.attribute_name
-                      )
-                      if text:
-                          texts.append(text)
-
-                  if texts:
-                      combined = "\n\n".join(texts)
-                      fallback_confidence = rule.confidence * (0.9 ** (i + 1))
-                      return combined, fallback_confidence
-
-          except Exception as e:
-              self.logger.warning(
-                  "Fallback selector failed",
-                  selector=fallback,
-                  error=str(e),
-              )
-
-      return None, 0.0
+        # Fallbacks
+        return self._extract_from_fallbacks(soup, rule)
 
     def _extract_structured_data(self, soup: BeautifulSoup):
         for script in soup.find_all("script", type="application/ld+json"):
@@ -296,6 +236,62 @@ class ContentExtractor:
                 if isinstance(item, dict):
                     for key in ("datePublished", "dateCreated", "uploadDate", "publication"):
                         return item.get(key) if item.get(key) else None
+
+    def _extract_from_selector(
+        self, soup: BeautifulSoup, selector: str, rule: SelectorRule
+    ) -> str | None:
+
+        elements = soup.select(selector)
+        if not elements:
+            return None
+
+        texts = []
+
+        for elem in elements:
+            text = self._extract_text_from_element(
+                elem, rule.extraction_method, rule.attribute_name
+            )
+
+            if "date" in selector or "time" in selector:
+                text = self._parse_date(text)
+
+            if text:
+                texts.append(text)
+
+        if not texts:
+            return None
+
+        if "date" in selector or "time" in selector:
+            texts = self._postprocess_dates(selector, texts)
+
+        return "\n\n".join(set(texts))
+
+    def _postprocess_dates(self, selector: str, texts: list[str]) -> list[str]:
+        """ Grab the earliest date """
+        earliest = min((x for x in texts), default=None)
+        return [earliest] if earliest else texts
+
+    def _extract_from_fallbacks(
+        self, soup: BeautifulSoup, rule: SelectorRule
+    ) -> tuple[str | None, float]:
+
+        for i, fallback in enumerate(rule.fallbacks):
+
+            try:
+                text = self._extract_from_selector(soup, fallback, rule)
+
+                if text:
+                    confidence = rule.confidence * (0.9 ** (i + 1))
+                    return text, confidence
+
+            except Exception as e:
+                self.logger.warning(
+                    "Fallback selector failed",
+                    selector=fallback,
+                    error=str(e),
+                )
+
+        return None, 0.0
 
     def _extract_date(self, soup: BeautifulSoup) -> tuple[str | None, float]:
         """
