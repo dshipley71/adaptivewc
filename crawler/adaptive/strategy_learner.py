@@ -24,7 +24,7 @@ class SelectorCandidate:
     success_rate: float = 1.0
     extraction_type: str = "css"  # "css", "structured", "attribute", etc.
     last_used: datetime = field(default_factory=datetime.utcnow)
-
+  
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -160,12 +160,13 @@ class StrategyLearner:
         structured_date = self._extract_structured_date(soup)
         
         if structured_date:
-            # Use structured date as a high-confidence candidate
-            date_candidate = SelectorCandidate(
-                selector="datePublished",       # just a name, not a CSS selector
-                extraction_type="structured",  # tells extractor to handle it specially
-                confidence=0.99,
-            )
+          print(f"====> Strategy, there was a structured data")
+          # Use structured date as a high-confidence candidate
+          date_candidate = SelectorCandidate(
+              selector="datePublished",       # just a name, not a CSS selector
+              extraction_type="structured",  # tells extractor to handle it specially
+              confidence=0.99,
+          )
         else:
             # Fallback to CSS selectors
             date_candidate = self._find_best_selector(
@@ -205,6 +206,7 @@ class StrategyLearner:
             metadata["date"] = SelectorRule(
                 primary=date_candidate.selector,
                 confidence=date_candidate.confidence,
+                extraction_method=date_candidate.extraction_type
             )
             confidences.append(date_candidate.confidence)
             confidence_scores["date"] = date_candidate.confidence
