@@ -158,6 +158,7 @@ class StrategyLearner:
 
         # Find date selector
         structured_date = self._extract_structured_date(soup)
+        print(f"=====> structured date found: {structured_date}")
 
 
         if structured_date:
@@ -168,13 +169,13 @@ class StrategyLearner:
                 extraction_method="structured",
                 confidence=0.99,
             )
-            print(f"====> selector candidate is set to {date_candidate}")
 
         else:
             # Fallback to CSS selectors
             date_candidate = self._find_best_selector(
                 soup, self.DATE_PATTERNS, "date"
             )
+            print(f"====> best date candidate found in strategy was: {date_candidate}")
 
         # Find author selector
         author_candidate = self._find_best_selector(
@@ -366,6 +367,21 @@ class StrategyLearner:
 
         return None
 
+    def _find_key_recursive(self, obj, target_key):
+      if isinstance(obj, dict):
+          if target_key in obj:
+              return obj[target_key]
+          for key, value in obj.items():
+              result = self._find_key_recursive(value, target_key)
+              if result is not None:
+                  return result
+      elif isinstance(obj, list):
+          for item in obj:
+              result = self._find_key_recursive(item, target_key)
+              if result is not None:
+                  return result
+      return None
+
     def _extract_structured_date(self, soup: BeautifulSoup) -> str | None:
         import json
 
@@ -381,8 +397,9 @@ class StrategyLearner:
                 for item in items:
                     if isinstance(item, dict):
                         for key in ("datePublished", "dateCreated", "uploadDate", "publication"):
-                            if item.get(key):
-                              return key
+                            founddate = self._find_key_recursive(item, key)
+                            if founddate:
+                                return founddate
             except Exception:
                 continue
 

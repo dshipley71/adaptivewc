@@ -107,10 +107,10 @@ class ContentExtractor:
         metadata = {}
         metadata_confidences = {}
         if strategy.metadata:
-          print("======> There is metadata")
           for key, rule in strategy.metadata.items():
-            print(f"====> starting {key}")
+            print(f"key: {key}\trule: {rule}")
             value, confidence = self._extract_with_rule(soup, rule)
+
             if value:
                 metadata[key] = value
                 metadata_confidences[key] = confidence
@@ -119,7 +119,6 @@ class ContentExtractor:
 
         # Extract date
         if "date" not in metadata:
-          print("==========> date was not in metadata")
           detected_date, date_confidence = self._extract_date(soup)
           if detected_date:
             metadata["date"] = detected_date
@@ -135,7 +134,7 @@ class ContentExtractor:
 
             metadata["date"] =  self._parse_date(result.publish_date)
             metadata_confidences["date"] = result.confidence
-            warnings.append(f"Date was extracted via LLM with source hint at: {result.publish_date}")
+            warnings.append(f"Date was extracted via LLM with source hint at: {result.source_hint}")
 
         # Extract images
         images = []
@@ -214,9 +213,9 @@ class ContentExtractor:
 
         # Structured data
         if rule.extraction_method == "structured":
-            text = self._extract_structured_data(soup)
-            if text:
-                return text, rule.confidence
+          text = self._extract_structured_data(soup)
+          if text:
+              return text, rule.confidence
 
         # Primary selector
         text = self._extract_from_selector(soup, rule.primary, rule)
@@ -225,6 +224,22 @@ class ContentExtractor:
 
         # Fallbacks
         return self._extract_from_fallbacks(soup, rule)
+
+    def _find_key_recursive(self, obj, target_key):
+      """Recursively searches for a key in a nested dict or list."""
+      if isinstance(obj, dict):
+          if target_key in obj:
+              return obj[target_key]
+          for key, value in obj.items():
+              result = self._find_key_recursive(value, target_key)
+              if result is not None:
+                  return result
+      elif isinstance(obj, list):
+          for item in obj:
+              result = self._find_key_recursive(item, target_key)
+              if result is not None:
+                  return result
+      return None
 
     def _extract_structured_data(self, soup: BeautifulSoup):
       for script in soup.find_all("script", type="application/ld+json"):
@@ -238,8 +253,9 @@ class ContentExtractor:
             from pprint import pprint
             if isinstance(item, dict):
                 for key in ("datePublished", "dateCreated", "uploadDate", "publication"):
-                  if item.get(key):
-                    return item.get(key)
+                  founddate = self._find_key_recursive(item, key)
+                  if founddate:
+                    return founddate
 
       return None
 
@@ -249,7 +265,7 @@ class ContentExtractor:
 
         elements = soup.select(selector)
         if not elements:
-            return None
+          return None
 
         texts = []
 
