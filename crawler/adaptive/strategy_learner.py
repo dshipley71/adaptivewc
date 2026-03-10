@@ -157,15 +157,13 @@ class StrategyLearner:
         )
 
         # Find date selector
-        structured_date = self._extract_structured_date(soup)
-        print(f"=====> structured date found: {structured_date}")
+        structured_date_selector = self._extract_structured_date(soup)
 
-
-        if structured_date:
+        if structured_date_selector:
             # Use structured date as a high-confidence candidate
 
             date_candidate = SelectorCandidate(
-                selector="datePublished",       # just a name, not a CSS selector
+                selector=structured_date_selector,       # just a name, not a CSS selector
                 extraction_method="structured",
                 confidence=0.99,
             )
@@ -175,7 +173,6 @@ class StrategyLearner:
             date_candidate = self._find_best_selector(
                 soup, self.DATE_PATTERNS, "date"
             )
-            print(f"====> best date candidate found in strategy was: {date_candidate}")
 
         # Find author selector
         author_candidate = self._find_best_selector(
@@ -399,7 +396,7 @@ class StrategyLearner:
                         for key in ("datePublished", "dateCreated", "uploadDate", "publication"):
                             founddate = self._find_key_recursive(item, key)
                             if founddate:
-                                return founddate
+                                return key
             except Exception:
                 continue
 
@@ -411,7 +408,6 @@ class StrategyLearner:
         )
 
         if tag and tag.get("content"):
-          print(f"=====> in extract structured data, tag is set to {tag} and tag.get(content) is {tag.get('content')}")
           return tag
 
         return None
