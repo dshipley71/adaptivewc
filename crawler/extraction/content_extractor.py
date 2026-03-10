@@ -108,10 +108,7 @@ class ContentExtractor:
         metadata_confidences = {}
         if strategy.metadata:
           for key, rule in strategy.metadata.items():
-            print(f"key: {key}\trule: {rule}")
             value, confidence = self._extract_with_rule(soup, rule)
-            print(f"=====> value found with rule was {value}")
-
             if value:
                 metadata[key] = value
                 metadata_confidences[key] = confidence
@@ -214,9 +211,7 @@ class ContentExtractor:
 
         # Structured data
         if rule.extraction_method == "structured":
-          print(f"====> extraction method was set to structured and rule was {rule.primary}")
           text = self._extract_structured_data(soup, rule.primary)
-          print(f"====> but did it find anything??: {text}")
           if text:
               return text, rule.confidence
 
@@ -340,7 +335,7 @@ class ContentExtractor:
           if tag and tag.get("content"):
               parsed = self._parse_date(tag["content"])
               if parsed:
-                  return parsed, 0.9
+                return parsed, 0.9
 
 
         # 2️⃣ Check <time> elements first (highest confidence)
