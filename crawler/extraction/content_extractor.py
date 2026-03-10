@@ -107,17 +107,19 @@ class ContentExtractor:
         metadata = {}
         metadata_confidences = {}
         if strategy.metadata:
-            for key, rule in strategy.metadata.items():
-              print(f"====> starting {key}")
-              value, confidence = self._extract_with_rule(soup, rule)
-              if value:
-                  metadata[key] = value
-                  metadata_confidences[key] = confidence
-              else:
-                  warnings.append(f"Metadata '{key}' extraction failed")
+          print("======> There is metadata")
+          for key, rule in strategy.metadata.items():
+            print(f"====> starting {key}")
+            value, confidence = self._extract_with_rule(soup, rule)
+            if value:
+                metadata[key] = value
+                metadata_confidences[key] = confidence
+            else:
+                warnings.append(f"Metadata '{key}' extraction failed")
 
         # Extract date
         if "date" not in metadata:
+          print("==========> date was not in metadata")
           detected_date, date_confidence = self._extract_date(soup)
           if detected_date:
             metadata["date"] = detected_date
@@ -225,17 +227,21 @@ class ContentExtractor:
         return self._extract_from_fallbacks(soup, rule)
 
     def _extract_structured_data(self, soup: BeautifulSoup):
-        for script in soup.find_all("script", type="application/ld+json"):
-            if not script.string:
-                continue
+      for script in soup.find_all("script", type="application/ld+json"):
+          if not script.string:
+              continue
 
-            data = json.loads(script.string)
-            items = data if isinstance(data, list) else [data]
+          data = json.loads(script.string)
+          items = data if isinstance(data, list) else [data]
 
-            for item in items:
-                if isinstance(item, dict):
-                    for key in ("datePublished", "dateCreated", "uploadDate", "publication"):
-                        return item.get(key) if item.get(key) else None
+          for item in items:
+            from pprint import pprint
+            if isinstance(item, dict):
+                for key in ("datePublished", "dateCreated", "uploadDate", "publication"):
+                  if item.get(key):
+                    return item.get(key)
+
+      return None
 
     def _extract_from_selector(
         self, soup: BeautifulSoup, selector: str, rule: SelectorRule
