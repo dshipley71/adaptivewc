@@ -22,17 +22,17 @@ class SelectorCandidate:
     confidence: float
     sample_count: int = 0
     success_rate: float = 1.0
-    extraction_type: str = "css"  # "css", "structured", "attribute", etc.
+    extraction_method: str = "text"
     last_used: datetime = field(default_factory=datetime.utcnow)
-  
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "selector": self.selector,
+            "extraction_method": self.extraction_method,
             "confidence": self.confidence,
             "sample_count": self.sample_count,
             "success_rate": self.success_rate,
-            "extraction_type": self.extraction_type,
             "last_used": self.last_used.isoformat(),
         }
 
@@ -158,15 +158,18 @@ class StrategyLearner:
 
         # Find date selector
         structured_date = self._extract_structured_date(soup)
-        
+
+
         if structured_date:
-          print(f"====> Strategy, there was a structured data")
-          # Use structured date as a high-confidence candidate
-          date_candidate = SelectorCandidate(
-              selector="datePublished",       # just a name, not a CSS selector
-              extraction_type="structured",  # tells extractor to handle it specially
-              confidence=0.99,
-          )
+            # Use structured date as a high-confidence candidate
+
+            date_candidate = SelectorCandidate(
+                selector="datePublished",       # just a name, not a CSS selector
+                extraction_method="structured",
+                confidence=0.99,
+            )
+            print(f"====> selector candidate is set to {date_candidate}")
+
         else:
             # Fallback to CSS selectors
             date_candidate = self._find_best_selector(
@@ -206,11 +209,11 @@ class StrategyLearner:
             metadata["date"] = SelectorRule(
                 primary=date_candidate.selector,
                 confidence=date_candidate.confidence,
-                extraction_method=date_candidate.extraction_type
+                extraction_method=date_candidate.extraction_method
             )
             confidences.append(date_candidate.confidence)
             confidence_scores["date"] = date_candidate.confidence
-
+            
         if author_candidate:
             metadata["author"] = SelectorRule(
                 primary=author_candidate.selector,
@@ -377,9 +380,9 @@ class StrategyLearner:
 
                 for item in items:
                     if isinstance(item, dict):
-                        for key in ("datePublished", "dateCreated", "dateModified"):
+                        for key in ("datePublished", "dateCreated", "uploadDate", "publication"):
                             if item.get(key):
-                                return item[key]
+                              return key
             except Exception:
                 continue
 
@@ -391,7 +394,8 @@ class StrategyLearner:
         )
 
         if tag and tag.get("content"):
-            return tag["content"]
+          print(f"=====> in extract structured data, tag is set to {tag} and tag.get(content) is {tag.get('content')}")
+          return tag
 
         return None
 
