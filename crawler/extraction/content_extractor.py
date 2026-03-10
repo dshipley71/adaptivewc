@@ -110,6 +110,7 @@ class ContentExtractor:
           for key, rule in strategy.metadata.items():
             print(f"key: {key}\trule: {rule}")
             value, confidence = self._extract_with_rule(soup, rule)
+            print(f"=====> value found with rule was {value}")
 
             if value:
                 metadata[key] = value
@@ -213,7 +214,9 @@ class ContentExtractor:
 
         # Structured data
         if rule.extraction_method == "structured":
-          text = self._extract_structured_data(soup)
+          print(f"====> extraction method was set to structured and rule was {rule.primary}")
+          text = self._extract_structured_data(soup, rule.primary)
+          print(f"====> but did it find anything??: {text}")
           if text:
               return text, rule.confidence
 
@@ -241,8 +244,9 @@ class ContentExtractor:
                   return result
       return None
 
-    def _extract_structured_data(self, soup: BeautifulSoup):
+    def _extract_structured_data(self, soup: BeautifulSoup, rule):
       for script in soup.find_all("script", type="application/ld+json"):
+        try:
           if not script.string:
               continue
 
@@ -250,12 +254,12 @@ class ContentExtractor:
           items = data if isinstance(data, list) else [data]
 
           for item in items:
-            from pprint import pprint
             if isinstance(item, dict):
-                for key in ("datePublished", "dateCreated", "uploadDate", "publication"):
-                  founddate = self._find_key_recursive(item, key)
-                  if founddate:
-                    return founddate
+              founddate = self._find_key_recursive(item, rule)
+              if founddate:
+                return founddate
+        except:
+          pass
 
       return None
 
