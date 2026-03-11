@@ -107,13 +107,13 @@ class ContentExtractor:
         metadata = {}
         metadata_confidences = {}
         if strategy.metadata:
-          for key, rule in strategy.metadata.items():
-            value, confidence = self._extract_with_rule(soup, rule)
-            if value:
-                metadata[key] = value
-                metadata_confidences[key] = confidence
-            else:
-                warnings.append(f"Metadata '{key}' extraction failed")
+            for key, rule in strategy.metadata.items():
+              value, confidence = self._extract_with_rule(soup, rule)
+              if value:
+                  metadata[key] = value
+                  metadata_confidences[key] = confidence
+              else:
+                  warnings.append(f"Metadata '{key}' extraction failed")
 
         # Extract date
         if "date" not in metadata:
@@ -216,6 +216,7 @@ class ContentExtractor:
               return text, rule.confidence
 
         # Primary selector
+
         text = self._extract_from_selector(soup, rule.primary, rule)
         if text:
             return text, rule.confidence

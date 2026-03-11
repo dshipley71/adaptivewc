@@ -392,23 +392,13 @@ class StrategyLearner:
                 items = data if isinstance(data, list) else [data]
 
                 for item in items:
-                    if isinstance(item, dict):
-                        for key in ("datePublished", "dateCreated", "uploadDate", "publication"):
-                            founddate = self._find_key_recursive(item, key)
-                            if founddate:
-                                return key
+                  if isinstance(item, dict):
+                      for key in ("datePublished", "dateCreated", "uploadDate", "publication"):
+                          founddate = self._find_key_recursive(item, key)
+                          if founddate:
+                            return key
             except Exception:
                 continue
-
-        # Meta tags
-        tag = soup.select_one(
-            "meta[property='article:published_time'], "
-            "meta[property='og:published_time'], "
-            "meta[itemprop='datePublished']"
-        )
-
-        if tag and tag.get("content"):
-          return tag
 
         return None
 
