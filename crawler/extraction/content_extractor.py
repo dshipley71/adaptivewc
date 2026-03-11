@@ -649,6 +649,8 @@ class PublishDateResult:
     source_hint: Optional[str]
     confidence: float
     extraction_method: str  # LLM provider name
+    in_tokens: Optional[int]
+    out_tokens: Optional[int]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -656,6 +658,8 @@ class PublishDateResult:
             "source_hint": self.source_hint,
             "confidence": self.confidence,
             "extraction_method": self.extraction_method,
+            "in_tokens": self.in_tokens,
+            "out_tokens": self.out_tokens
         }
 
 
@@ -773,8 +777,9 @@ class LLMDateExtractor(BaseDateExtractor):
             )
             response.raise_for_status()
             result = response.json()
+
             # Ollama chat response format: {"message": {"content": "..."}}
-            return result.get("message", {}).get("content", "").strip()
+            return result#.get("message", {}).get("content", "").strip()
         else:
             # Local Ollama uses /api/generate with prompt format
             payload = {
@@ -800,6 +805,8 @@ class LLMDateExtractor(BaseDateExtractor):
     def extract(self, html: str) -> PublishDateResult:
         client = self._get_client()
 
+        first_quarter = int(len(html)/4)
+ 
         prompt = f"""
           You are analyzing raw HTML from a news article.
 
@@ -808,17 +815,18 @@ class LLMDateExtractor(BaseDateExtractor):
           2. Identify the exact HTML element or property where it was found
             (e.g., meta[property="article:published_time"],
               div class="post-date", JSON-LD datePublished, etc.)
+          3. Give a brief snippet of the exact HTML showing the date published.
 
           Return ONLY valid JSON:
 
           {{
             "publish_date": "...",
             "source_hint": "...",
-            "confidence": 0.0-1.0
+            "confidence": 0.0-1.0,
           }}
 
           HTML:
-          {html[:15000]}
+          {html[:first_quarter]}
           """
 
         try:
@@ -842,7 +850,7 @@ class LLMDateExtractor(BaseDateExtractor):
 
             elif self.provider in ("ollama", "ollama-cloud"):
               llm_response = self._call_ollama(prompt, max_tokens=200)
-              
+              llm_answer = llm_response.get("message", {}).get("content", "").strip()       
 
             else:
                 raise ValueError(f"Unsupported provider: {self.provider}")
@@ -850,13 +858,15 @@ class LLMDateExtractor(BaseDateExtractor):
             if not llm_response:
               self.logger.warning(f"No response from the LLM. Provider: {self.provider}, Client: {self._get_client()}")
 
-            data = parse_llm_json(llm_response)
+            data = parse_llm_json(llm_answer)
 
             return PublishDateResult(
                 publish_date=data.get("publish_date"),
                 source_hint=data.get("source_hint"),
                 confidence=float(data.get("confidence", 0.5)),
                 extraction_method=self.provider,
+                in_tokens=llm_response.get("prompt_eval_count"),
+                out_tokens=llm_response.get("eval_count"),
             )
 
         except Exception as e:
@@ -865,6 +875,8 @@ class LLMDateExtractor(BaseDateExtractor):
                 source_hint=f"LLM parse error: {str(e)}",
                 confidence=0.0,
                 extraction_method=self.provider,
+                in_tokens=None,
+                out_tokens=None
             )
 
 def parse_llm_json(raw: str) -> Dict[str, Any]:
