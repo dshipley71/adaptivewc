@@ -132,7 +132,7 @@ class ContentExtractor:
 
             metadata["date"] =  self._parse_date(result.publish_date)
             metadata_confidences["date"] = result.confidence
-            warnings.append(f"Date was extracted via LLM with source hint at: {result.publish_date}")
+            warnings.append(f"Date was extracted via LLM with source hint at: {result.source_hint}")
 
         # Extract images
         images = []
@@ -208,67 +208,104 @@ class ContentExtractor:
         soup: BeautifulSoup,
         rule: SelectorRule,
     ) -> tuple[str | None, float]:
-        """
-        Apply a selector rule to extract text with fallback handling.
 
-        Args:
-            soup: Parsed HTML.
-            rule: Selector rule with primary and fallback selectors.
+        # Structured data
+        if rule.extraction_method == "structured":
+          text = self._extract_structured_data(soup, rule.primary)
+          if text:
+              return text, rule.confidence
 
-        Returns:
-            Tuple of (extracted_text, confidence).
-        """
-        # Try primary selector
+        # Primary selector
+
+        text = self._extract_from_selector(soup, rule.primary, rule)
+        if text:
+            return text, rule.confidence
+
+        # Fallbacks
+        return self._extract_from_fallbacks(soup, rule)
+
+    def _find_key_recursive(self, obj, target_key):
+      """Recursively searches for a key in a nested dict or list."""
+      if isinstance(obj, dict):
+          if target_key in obj:
+              return obj[target_key]
+          for key, value in obj.items():
+              result = self._find_key_recursive(value, target_key)
+              if result is not None:
+                  return result
+      elif isinstance(obj, list):
+          for item in obj:
+              result = self._find_key_recursive(item, target_key)
+              if result is not None:
+                  return result
+      return None
+
+    def _extract_structured_data(self, soup: BeautifulSoup, rule):
+      for script in soup.find_all("script", type="application/ld+json"):
         try:
+          if not script.string:
+              continue
 
-          elements = soup.select(rule.primary)
-            
-          if elements:
-              # Extract from all matching elements and join
-              texts = []
-              for elem in elements:
-                text = self._extract_text_from_element(
-                    elem, rule.extraction_method, rule.attribute_name
-                )
-                if "time" in rule.primary or "date" in rule.primary:
-                  text = self._parse_date(text)
-                if text:
-                  texts.append(text)
-              if texts:
-                if "time" in rule.primary or "date" in rule.primary:
-                  # Find the earliest date of the ones that have already happened. Eliminate the future dates.
-                  earliest = [min(
-                    (x for x in texts),
-                    default=None
-                    )]
-                  texts = earliest
-                combined = "\n\n".join(set(texts))
-                return combined, rule.confidence
-        except Exception as e:
-            self.logger.warning(
-                "Primary selector failed",
-                selector=rule.primary,
-                error=str(e),
+          data = json.loads(script.string)
+          items = data if isinstance(data, list) else [data]
+
+          for item in items:
+            if isinstance(item, dict):
+              founddate = self._find_key_recursive(item, rule)
+              if founddate:
+                return founddate
+        except:
+          pass
+
+      return None
+
+    def _extract_from_selector(
+        self, soup: BeautifulSoup, selector: str, rule: SelectorRule
+    ) -> str | None:
+
+        elements = soup.select(selector)
+        if not elements:
+          return None
+
+        texts = []
+
+        for elem in elements:
+            text = self._extract_text_from_element(
+                elem, rule.extraction_method, rule.attribute_name
             )
 
-        # Try fallback selectors
+            if "date" in selector or "time" in selector:
+                text = self._parse_date(text)
+
+            if text:
+                texts.append(text)
+
+        if not texts:
+            return None
+
+        if "date" in selector or "time" in selector:
+            texts = self._postprocess_dates(selector, texts)
+
+        return "\n\n".join(set(texts))
+
+    def _postprocess_dates(self, selector: str, texts: list[str]) -> list[str]:
+        """ Grab the earliest date """
+        earliest = min((x for x in texts), default=None)
+        return [earliest] if earliest else texts
+
+    def _extract_from_fallbacks(
+        self, soup: BeautifulSoup, rule: SelectorRule
+    ) -> tuple[str | None, float]:
+
         for i, fallback in enumerate(rule.fallbacks):
+
             try:
-                elements = soup.select(fallback)
-                if elements:
-                    # Extract from all matching elements and join
-                    texts = []
-                    for elem in elements:
-                        text = self._extract_text_from_element(
-                            elem, rule.extraction_method, rule.attribute_name
-                        )
-                        if text:
-                            texts.append(text)
-                    if texts:
-                        combined = "\n\n".join(texts)
-                        # Reduce confidence for using fallback
-                        fallback_confidence = rule.confidence * (0.9 ** (i + 1))
-                        return combined, fallback_confidence
+                text = self._extract_from_selector(soup, fallback, rule)
+
+                if text:
+                    confidence = rule.confidence * (0.9 ** (i + 1))
+                    return text, confidence
+
             except Exception as e:
                 self.logger.warning(
                     "Fallback selector failed",
@@ -277,7 +314,6 @@ class ContentExtractor:
                 )
 
         return None, 0.0
-
 
     def _extract_date(self, soup: BeautifulSoup) -> tuple[str | None, float]:
         """
@@ -300,7 +336,7 @@ class ContentExtractor:
           if tag and tag.get("content"):
               parsed = self._parse_date(tag["content"])
               if parsed:
-                  return parsed, 0.9
+                return parsed, 0.9
 
 
         # 2️⃣ Check <time> elements first (highest confidence)
@@ -414,7 +450,15 @@ class ContentExtractor:
             Extracted string or None.
         """
         try:
-          if extraction_method == "text":
+          if attribute_name == "date":
+            date_value = (
+                element.get("datetime")
+                or element.get("content")
+                or element.get_text(strip=True, separator=" ")
+            )
+            date_value =  self._parse_date(date_value)
+            return date_value if date_value else None
+          elif extraction_method == "text":
               text = element.get_text(strip=True, separator=" ")
               return text if text else None
           elif extraction_method == "html":
@@ -605,6 +649,8 @@ class PublishDateResult:
     source_hint: Optional[str]
     confidence: float
     extraction_method: str  # LLM provider name
+    in_tokens: Optional[int]
+    out_tokens: Optional[int]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -612,6 +658,8 @@ class PublishDateResult:
             "source_hint": self.source_hint,
             "confidence": self.confidence,
             "extraction_method": self.extraction_method,
+            "in_tokens": self.in_tokens,
+            "out_tokens": self.out_tokens
         }
 
 
@@ -729,8 +777,9 @@ class LLMDateExtractor(BaseDateExtractor):
             )
             response.raise_for_status()
             result = response.json()
+
             # Ollama chat response format: {"message": {"content": "..."}}
-            return result.get("message", {}).get("content", "").strip()
+            return result#.get("message", {}).get("content", "").strip()
         else:
             # Local Ollama uses /api/generate with prompt format
             payload = {
@@ -756,6 +805,8 @@ class LLMDateExtractor(BaseDateExtractor):
     def extract(self, html: str) -> PublishDateResult:
         client = self._get_client()
 
+        first_quarter = int(len(html)/4)
+ 
         prompt = f"""
           You are analyzing raw HTML from a news article.
 
@@ -764,17 +815,18 @@ class LLMDateExtractor(BaseDateExtractor):
           2. Identify the exact HTML element or property where it was found
             (e.g., meta[property="article:published_time"],
               div class="post-date", JSON-LD datePublished, etc.)
+          3. Give a brief snippet of the exact HTML showing the date published.
 
           Return ONLY valid JSON:
 
           {{
             "publish_date": "...",
             "source_hint": "...",
-            "confidence": 0.0-1.0
+            "confidence": 0.0-1.0,
           }}
 
           HTML:
-          {html[:15000]}
+          {html[:first_quarter]}
           """
 
         try:
@@ -798,7 +850,7 @@ class LLMDateExtractor(BaseDateExtractor):
 
             elif self.provider in ("ollama", "ollama-cloud"):
               llm_response = self._call_ollama(prompt, max_tokens=200)
-              
+              llm_answer = llm_response.get("message", {}).get("content", "").strip()       
 
             else:
                 raise ValueError(f"Unsupported provider: {self.provider}")
@@ -806,13 +858,15 @@ class LLMDateExtractor(BaseDateExtractor):
             if not llm_response:
               self.logger.warning(f"No response from the LLM. Provider: {self.provider}, Client: {self._get_client()}")
 
-            data = parse_llm_json(llm_response)
+            data = parse_llm_json(llm_answer)
 
             return PublishDateResult(
                 publish_date=data.get("publish_date"),
                 source_hint=data.get("source_hint"),
                 confidence=float(data.get("confidence", 0.5)),
                 extraction_method=self.provider,
+                in_tokens=llm_response.get("prompt_eval_count"),
+                out_tokens=llm_response.get("eval_count"),
             )
 
         except Exception as e:
@@ -821,6 +875,8 @@ class LLMDateExtractor(BaseDateExtractor):
                 source_hint=f"LLM parse error: {str(e)}",
                 confidence=0.0,
                 extraction_method=self.provider,
+                in_tokens=None,
+                out_tokens=None
             )
 
 def parse_llm_json(raw: str) -> Dict[str, Any]:
