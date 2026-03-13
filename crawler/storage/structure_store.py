@@ -484,6 +484,7 @@ class StructureStore:
         Returns:
             PageStructure or None if not found.
         """
+
         key = self._structure_key(domain, page_type, variant_id)
 
         try:

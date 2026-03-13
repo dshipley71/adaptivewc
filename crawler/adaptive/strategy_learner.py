@@ -11,6 +11,7 @@ from typing import Any
 from bs4 import BeautifulSoup
 
 from crawler.models import ExtractionStrategy, PageStructure, ContentRegion, SelectorRule
+from crawler.extraction.content_extractor import ContentExtractor
 from crawler.utils.logging import CrawlerLogger
 
 
@@ -491,30 +492,31 @@ class StrategyLearner:
         Returns:
             Tuple of (overall_valid, field_results).
         """
+        extractor = ContentExtractor(logger=self.logger)
         soup = BeautifulSoup(html, "lxml")
         results: dict[str, bool] = {}
 
         # Check title
         if strategy.title:
             try:
-                elements = soup.select(strategy.title.primary)
-                results["title"] = len(elements) > 0
+                text, confidence = extractor._extract_with_rule(soup, strategy.title)
+                results["title"] = text is not None
             except Exception:
                 results["title"] = False
 
         # Check content
         if strategy.content:
             try:
-                elements = soup.select(strategy.content.primary)
-                results["content"] = len(elements) > 0
+                text, confidence = extractor._extract_with_rule(soup, strategy.content)
+                results["content"] = text is not None
             except Exception:
                 results["content"] = False
 
         # Check metadata
         for key, rule in (strategy.metadata or {}).items():
             try:
-                elements = soup.select(rule.primary)
-                results[key] = len(elements) > 0
+                text, confidence = extractor._extract_with_rule(soup, rule)
+                results[key] = text is not None
             except Exception:
                 results[key] = False
 
