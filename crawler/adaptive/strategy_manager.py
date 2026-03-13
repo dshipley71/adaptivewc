@@ -92,16 +92,31 @@ class ManualStrategyManager:
         )
 
       
-    def save_new_strategy(
+    async def save_new_strategy(
       self, 
       strategy: ExtractionStrategy, 
-      validation_html: str = None
+      validation_html: str | None = None,
+      variant_id: str = "default"
     ):
+      print(f"====> new strategy looks like: {strategy}")
+      verified = False
+      # Validate strategy with HTML if HTML example provided
       if validation_html:
         
-        overall, results = self.strategy_learner.validate_strategy(strategy, validation_html)
-        print(f"=====> overall: {overall}")
-        print(f"=====> results: {results}")
+        verified, results = self.strategy_learner.validate_strategy(strategy, validation_html)
+        if not verified:
+          self.logger.warning(f"Validation failed: {", ".join([x for x in results if not results[x]])} failed to extract content.")
+          return None
+
+
+      # Save new strategy
+      saved = await self.structure_store.save_strategy(strategy, variant_id)
+      self.logger.info(f"New strategy saved for {strategy.domain}:{strategy.page_type} via {strategy.learning_source}. New strategy was {'not' if not verified else ''} verified.")
+      
+
+      
+
+      
         
       
 
