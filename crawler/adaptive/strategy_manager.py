@@ -29,16 +29,15 @@ class ManualStrategyManager:
         self, 
         domain: str, 
         page_type: str, 
-        new_title: str = None, 
-        new_content: str = None, 
-        new_date: str = None
+        new_title: Optional[str] = None,
+        new_content: Optional[str] = None,
+        new_date: Optional[str] = None,
       ) -> Optional[ExtractionStrategy]:
 
         strategy = await self.structure_store.get_strategy(domain, page_type)
 
         if not strategy:
             self.logger.debug(f"No version found for {domain}:{page_type}")
-            # TODO: Prompt for URL to scrape?
             return None
         
         title_selector, content_selector, date_selector = None, None, None
@@ -105,7 +104,8 @@ class ManualStrategyManager:
         
         verified, results = self.strategy_learner.validate_strategy(strategy, validation_html)
         if not verified:
-          self.logger.warning(f"Validation failed: {", ".join([x for x in results if not results[x]])} failed to extract content.")
+          failed_fields = ", ".join([k for k, v in results.items() if not v])
+          self.logger.warning(f"Validation failed: {failed_fields} failed to extract content.")
           return None
 
 
